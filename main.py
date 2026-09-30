@@ -747,7 +747,8 @@ def _main(
         run.fail("unknown", describe(e), {"exit_code": 1})
         return 1
     finally:
-        cv2.destroyAllWindows()
+        if not args.headless:  # no windows exist; avoids GUI init on a displayless CI box
+            cv2.destroyAllWindows()
     return 0
 
 

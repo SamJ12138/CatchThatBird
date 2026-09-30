@@ -55,7 +55,7 @@ F4. **YOLO's first call is cold.** It took 275 ms, against a steady p50 of ≈60
 F5. **The warm-up is off by one.** `frame_count < motion_warmup_frames` skips 59 frames, not 60 (detector.py:159). This is harmless.
    - **Status:** fixed in batch 1 `1513b40` (`<` → `<=`; with the default 60/30 config the first gated frame is now 90, not 60)
 F6. **YOLO never labelled the synthetic blob a bird** (`detection_map` skip `yolo_empty` ×17 / ×18). This was expected, so the persistence path was not exercised because no detection existed. It has not been built yet anyway.
-   - **Status:** n/a (expected). Persistence (Phase 3 `EventLogger`, batch 4 `@B4@`) is exercised with a fake predictor: synth video + fake birds on frames 90/120/150/400 → exactly 2 events
+   - **Status:** n/a (expected). Persistence (Phase 3 `EventLogger`, batch 4 `d12b264`) is exercised with a fake predictor: synth video + fake birds on frames 90/120/150/400 → exactly 2 events
 
 ## Implementation notes (deviations from the brief)
 
@@ -63,5 +63,5 @@ F6. **YOLO never labelled the synthetic blob a bird** (`detection_map` skip `yol
 - **Per-frame throttling:** `render` also runs at 30 fps, so it gets the same 300-frame summary treatment as `capture_read`, `mog2_apply` and `gate_check`. For `gate_check`, the routine skips (`warmup`, `cadence`) happen 29 frames out of 30. They are counted in the summary rather than written one line each; only the warm-up begin and complete transitions get their own lines. Every `capture_read` failure still gets its own line, as specified (see item 1 for the resulting rate).
 - **`--source` pacing:** the file is delivered at its own fps, from `CAP_PROP_FPS`. Unpaced, the grabber would decode hundreds of fps and the main loop would drop most frames, which would not behave like the camera. End of file is the first failed `read()`.
 - **`--headless` + `--select-roi`:** `--select-roi` is ignored with a warning, since there is no dialog.
-- **Snapshots from the `s` key** (PROJECT_REPORT §8.7): now written to `snapshots_dir` (root-relative) as `manual_<ts>_seq<N>.jpg` instead of `./snap_NNN.jpg` in the CWD. Fixed in batch 4 `@B4@`.
+- **Snapshots from the `s` key** (PROJECT_REPORT §8.7): now written to `snapshots_dir` (root-relative) as `manual_<ts>_seq<N>.jpg` instead of `./snap_NNN.jpg` in the CWD. Fixed in batch 4 `d12b264`.
 - **`.gitignore`:** `logs/` was added before the baseline commit; `data/samples/` (generated clips) was added in the feature commit.

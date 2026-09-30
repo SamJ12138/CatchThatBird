@@ -8,19 +8,13 @@ from typing import Any, Callable
 import numpy as np
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from loguru import logger
 
-from loguru import logger  # noqa: E402
+from obs import ObsLogger
+from scripts.make_synth_video import make_video
+from tests.fakes import FakePredictor
 
-from obs import ObsLogger  # noqa: E402
-from scripts.make_synth_video import make_video  # noqa: E402
-from tests.fakes import FakePredictor  # noqa: E402
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line("markers", "slow: loads the real yolov8n.pt (one test only)")
+ROOT = Path(__file__).resolve().parent.parent  # pyproject.toml puts it on sys.path
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Fast suite only: -m "not slow" skips the one test that loads the real
+# yolov8n.pt. No test touches a camera; fakes stand in for the capture
+# device and the predictor.
+
+jobs:
+  test-ubuntu:
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: System libraries for OpenCV
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Tests
+        run: pytest -m "not slow" -v --cov --cov-report=term --cov-report=json:coverage.json
+      - name: Coverage summary
+        id: coverage
+        if: always()
+        shell: bash
+        run: |
+          total=$(python -c "import json; print(round(json.load(open('coverage.json'))['totals']['percent_covered'], 1))")
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+          echo "### Coverage (ubuntu): ${total}%" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-ubuntu
+          path: coverage.json
+
+  test-windows:
+    runs-on: windows-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.total }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Tests
+        run: pytest -m "not slow" -v --cov --cov-report=term --cov-report=json:coverage.json
+      - name: Coverage summary
+        id: coverage
+        if: always()
+        run: |
+          total=$(python -c "import json; print(round(json.load(open('coverage.json'))['totals']['percent_covered'], 1))")
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+          echo "### Coverage (windows): ${total}%" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-windows
+          path: coverage.json

@@ -18,3 +18,9 @@ data/samples/
 # IDE
 .vscode/
 .idea/
+
+# Test / coverage output
+.coverage
+.coverage.*
+coverage.json
+.pytest_cache/
