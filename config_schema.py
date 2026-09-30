@@ -5,6 +5,14 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+# Relative paths in config.yaml resolve against the project directory, never
+# the current working directory.
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def resolve_path(path: Path, root: Path = PROJECT_ROOT) -> Path:
+    return path if path.is_absolute() else root / path
+
 
 class CameraConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

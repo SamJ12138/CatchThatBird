@@ -48,6 +48,10 @@ The work is split across two threads. The grabber thread runs `capture_read` con
 |---|---|---|---|---|---|
 | 17 | `capture_close` | `FrameGrabber.stop` (camera.py:267) | grabber | released capture | Thread still alive after the 2 s join → capture released anyway (`timeout`) |
 
-## D. Not implemented yet (Phase 3)
+## D. Persistence (Phase 3, `logger.py`)
 
-`dedupe` → `persist` (`data/events.jsonl`, `data/snapshots/`). Their config keys exist (`detection.dedupe_within_seconds`, `logging.*`, `storage.*`), but no code reads them, so they are neither logged nor listed as stages above.
+| # | Stage | Owner | Input | Output | Failure modes seen in the code |
+|---|---|---|---|---|---|
+| 8a | `retention` | `EventLogger.__init__` → `sweep_retention` (runs before capture) | `snapshots_dir` | deleted count | `unlink` OSError → `fail` (`hardware`) for that file, sweep continues. Only `.jpg/.jpeg/.png` are touched; `events.jsonl` never is |
+| 15a | `persist` | `EventLogger.handle` (called for every processed frame, right after `detector.process`) | `Frame`, `[Detection]` | open visits in memory; snapshots at visit open | Detection matching an open visit → `skip` `dedupe`. New visit over `max_events_per_day` → `skip` `daily_cap` (dropped). Snapshot write fails → `fail` (`hardware`), event kept with a null path |
+| 15b | `persist` | `EventLogger._write_event` (visit expired, or `close()` at shutdown) | closed visit | one line in `events.jsonl` | `success` line per event. A hard kill loses visits that are still open (at most `dedupe_within_seconds` after the bird's last sighting, or longer for a long-perching bird) |

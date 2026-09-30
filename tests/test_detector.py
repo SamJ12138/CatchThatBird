@@ -60,6 +60,8 @@ def test_crop_and_detection_map_to_full_frame(obs, fake_predictor, roi, block_xy
     assert len(detections) == 1
     ox, oy = expected_origin
     assert detections[0].bbox_xywh == (ox + 5, oy + 6, 10, 20)
+    ch, cw = expected_crop_hw
+    assert detections[0].crop_xyxy == (ox, oy, ox + cw, oy + ch)  # for the crop snapshot
     assert detections[0].class_name == "bird"
     assert detections[0].frame_seq == 3
 

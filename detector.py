@@ -23,6 +23,7 @@ class Detection:
     bbox_xywh: tuple[int, int, int, int]   # full-frame coordinates
     frame_seq: int
     captured_wall_time: float              # Frame.captured_wall_time (capture moment)
+    crop_xyxy: tuple[int, int, int, int] = (0, 0, 0, 0)  # padded predictor crop, full-frame
 
 
 class RawBox(NamedTuple):
@@ -346,6 +347,7 @@ class Detector:
                         ),
                         frame_seq=frame.seq,
                         captured_wall_time=frame.captured_wall_time,
+                        crop_xyxy=(x0, y0, x1, y1),
                     )
                 )
             sp.context.update(dropped_class=dropped_class, dropped_conf=dropped_conf)

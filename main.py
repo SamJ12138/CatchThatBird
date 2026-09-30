@@ -65,7 +65,7 @@ data/roi.json and reused. Pass --select-roi to redo it.
 
 A live preview window will then open. Controls:
     q / Esc   quit
-    s         save the current frame to ./snap_NNN.jpg
+    s         save the current frame to data/snapshots/manual_*.jpg
 
 The HUD shows display FPS, pipeline latency, and detection counts.
 
@@ -382,6 +382,7 @@ def run_preview(
 ) -> None:
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
     from detector import Detection, Detector
+    from logger import EventLogger
 
     recent_detections: list[tuple[float, Detection]] = []
     detection_overlay_ttl = 1.5  # seconds to keep a box visible after detection
@@ -389,8 +390,13 @@ def run_preview(
     # Load the model BEFORE capture starts so no frames are lost while it
     # loads; the ROI (which needs the first frame) is set afterwards.
     detector = Detector(config.detection, obs=obs, predictor=predictor)
+    # Also before capture: the retention sweep runs in the constructor.
+    events = EventLogger(
+        config.logging, config.storage, obs.run_id, obs=obs,
+        dedupe_within_seconds=config.detection.dedupe_within_seconds,
+    )
 
-    with FrameGrabber(
+    with events, FrameGrabber(
         device_index=config.camera.device_index,
         width=config.camera.width,
         height=config.camera.height,
@@ -427,7 +433,6 @@ def run_preview(
         display_fps_ema = 0.0
         latency_ms_ema = 0.0
         ema_alpha = 0.1
-        snap_count = 0
         skipped_total = 0  # producer frames the display never showed
         render_counter = obs.counter(
             "render",
@@ -484,7 +489,8 @@ def run_preview(
             )
             last_seq = frame.seq
 
-            for det in detector.process(frame):
+            detections = detector.process(frame)
+            for det in detections:
                 logger.info(
                     f"{det.class_name.upper()} detected "
                     f"(conf={det.confidence:.2f}, "
@@ -492,6 +498,7 @@ def run_preview(
                     f"{det.bbox_xywh[2]},{det.bbox_xywh[3]})"
                 )
                 recent_detections.append((now, det))
+            events.handle(frame, detections)
             grabber.ack(frame.seq)
 
             recent_detections = [
@@ -561,9 +568,8 @@ def run_preview(
                 logger.info("Quit requested via keyboard")
                 return
             if key == ord("s"):
-                snap_path = Path(f"snap_{snap_count:03d}.jpg").resolve()
-                save_snapshot(snap_path, frame.image, obs, frame_seq=frame.seq)
-                snap_count += 1
+                save_snapshot(events.manual_snapshot_path(frame), frame.image, obs,
+                              frame_seq=frame.seq)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:

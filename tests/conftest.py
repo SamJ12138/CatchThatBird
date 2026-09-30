@@ -31,6 +31,32 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = 1
 
 
+# ---------------------------------------------------------------- config isolation
+
+def write_test_config(directory: Path, **replacements: str) -> Path:
+    """config.yaml copy whose events/snapshots live under `directory`/data."""
+    text = (ROOT / "config.yaml").read_text(encoding="utf-8")
+    data = (directory / "data").as_posix()
+    text = text.replace("events_file: data/events.jsonl", f'events_file: "{data}/events.jsonl"')
+    text = text.replace("snapshots_dir: data/snapshots", f'snapshots_dir: "{data}/snapshots"')
+    for old, new in replacements.items():
+        assert old in text, old
+        text = text.replace(old, new)
+    path = directory / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No test writes events or snapshots into the real project data/."""
+    import main
+
+    path = write_test_config(tmp_path)
+    monkeypatch.setattr(main, "CONFIG_FILE", path)
+    return path
+
+
 # ---------------------------------------------------------------- videos
 
 @pytest.fixture

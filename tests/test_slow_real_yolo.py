@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from tests.conftest import ROOT, read_log
+from tests.conftest import ROOT, read_log, write_test_config
 
 
 @pytest.mark.slow
@@ -18,7 +18,8 @@ def test_real_yolo_end_to_end(synth_video_15s, tmp_path) -> None:
     proc = subprocess.run(
         [sys.executable, str(ROOT / "main.py"), "--source", str(synth_video_15s),
          "--headless", "--no-pace", "--log-dir", str(log_dir),
-         "--roi-file", str(tmp_path / "no_roi.json")],
+         "--roi-file", str(tmp_path / "no_roi.json"),
+         "--config", str(write_test_config(tmp_path))],
         cwd=ROOT, capture_output=True, text=True, timeout=300,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]

@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import main
-from tests.conftest import ROOT, read_log
+from tests.conftest import ROOT, read_log, write_test_config
 
 WRAPPER = ROOT / "tests" / "main_with_fakes.py"
 
@@ -23,6 +23,8 @@ def run_proc(script: Path, args: list[str], tmp_path: Path, fakes: dict | None =
              timeout: float = 30) -> tuple[subprocess.CompletedProcess, list[dict]]:
     log_dir = tmp_path / "logs"
     env = {**os.environ, "CTB_FAKES": json.dumps(fakes or {})}
+    if "--config" not in args:
+        args = [*args, "--config", str(write_test_config(tmp_path))]
     proc = subprocess.run(
         [sys.executable, str(script), *args, "--log-dir", str(log_dir),
          "--roi-file", str(tmp_path / "no_roi.json")],
