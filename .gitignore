@@ -10,6 +10,7 @@ data/events.jsonl
 data/snapshots/
 snap_*.jpg
 logs/
+data/samples/
 
 # Model weights (downloaded at runtime by ultralytics)
 *.pt

@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from obs import ObsLogger, describe
+
 
 # Heuristic name fragments. Matching is case-insensitive.
 _POCKET_KEYWORDS = ("dji", "osmo", "pocket")
@@ -18,28 +20,35 @@ _BUILTIN_KEYWORDS = (
 )
 
 
-def list_devices() -> list[tuple[int, str]]:
+def list_devices(obs: ObsLogger) -> list[tuple[int, str]]:
     """Enumerate video capture devices as [(opencv_index, name), ...].
 
     On Windows we use pygrabber, whose enumeration order matches OpenCV's
     CAP_DSHOW. If pygrabber is unavailable, we fall back to probing indexes
     0-5 with no name (the user has to identify by elimination)."""
-    try:
-        from pygrabber.dshow_graph import FilterGraph  # type: ignore
-        graph = FilterGraph()
-        names = graph.get_input_devices()
-        return list(enumerate(names))
-    except Exception as e:
-        logger.debug(f"pygrabber unavailable ({e}); probing indexes 0-5")
-        found: list[tuple[int, str]] = []
-        for idx in range(6):
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            try:
-                if cap.isOpened():
-                    found.append((idx, f"<device {idx}>"))
-            finally:
-                cap.release()
-        return found
+    with obs.span("device_list") as sp:
+        try:
+            from pygrabber.dshow_graph import FilterGraph  # type: ignore
+            graph = FilterGraph()
+            names = graph.get_input_devices()
+            sp.success({"enumerator": "pygrabber", "devices": names})
+            return list(enumerate(names))
+        except Exception as e:
+            logger.debug(f"pygrabber unavailable ({e}); probing indexes 0-5")
+            obs.emit(
+                "device_list", "fail", error_type="external_api",
+                error_message=describe(e), context={"fallback": "probe_indexes_0_5"},
+            )
+            found: list[tuple[int, str]] = []
+            for idx in range(6):
+                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                try:
+                    if cap.isOpened():
+                        found.append((idx, f"<device {idx}>"))
+                finally:
+                    cap.release()
+            sp.success({"enumerator": "probe", "devices": [n for _, n in found]})
+            return found
 
 
 def classify_device(name: str) -> str:
@@ -70,7 +79,11 @@ class Frame:
 class FrameGrabber:
     """Threaded UVC capture. Producer always overwrites the latest-frame slot;
     consumer peeks the slot so display never blocks and detection can skip
-    re-processing the same seq."""
+    re-processing the same seq.
+
+    With `source` set, frames come from a video file instead of a camera. The
+    file is read at its own frame rate (like a camera would deliver it), and
+    `finished` becomes True once the file runs out."""
 
     def __init__(
         self,
@@ -78,11 +91,18 @@ class FrameGrabber:
         width: int,
         height: int,
         fps: int,
+        *,
+        obs: ObsLogger,
+        source: Optional[str] = None,
     ) -> None:
         self._device_index = device_index
         self._width = width
         self._height = height
         self._fps = fps
+        self._obs = obs
+        self._source = source
+        self._frame_interval = 1.0 / fps
+        self._finished = threading.Event()
         self._cap: Optional[cv2.VideoCapture] = None
         self._latest: Optional[Frame] = None
         self._lock = threading.Lock()
@@ -91,22 +111,62 @@ class FrameGrabber:
         self._seq = 0
         self._frames_captured = 0
         self._read_failures = 0
+        self._read_counter = obs.counter(
+            "capture_read",
+            context_fn=lambda: {"failures_total": self._read_failures},
+        )
 
     def _open_capture(self) -> cv2.VideoCapture:
-        tried: list[str] = []
-        for backend, name in [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF")]:
-            cap = cv2.VideoCapture(self._device_index, backend)
-            if cap.isOpened():
-                logger.info(f"Opened camera index {self._device_index} via {name}")
-                return self._configure(cap)
-            cap.release()
-            tried.append(name)
-        raise RuntimeError(
-            f"Failed to open camera index {self._device_index} "
-            f"(tried backends: {', '.join(tried)}). "
-            "Confirm the Pocket 3 is in Webcam mode (USB-C connected, screen "
-            "shows Webcam) and no other app is holding the camera."
-        )
+        if self._source is not None:
+            return self._open_file()
+        with self._obs.span(
+            "capture_open",
+            context={"device_index": self._device_index},
+            error_type="hardware",
+        ) as sp:
+            tried: list[str] = []
+            for backend, name in [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF")]:
+                cap = cv2.VideoCapture(self._device_index, backend)
+                if cap.isOpened():
+                    logger.info(f"Opened camera index {self._device_index} via {name}")
+                    cap = self._configure(cap)
+                    sp.success({"backend": name, "backends_failed": tried,
+                                **self._negotiated})
+                    return cap
+                cap.release()
+                tried.append(name)
+                self._obs.emit(
+                    "capture_open", "fail", error_type="hardware",
+                    error_message=f"backend {name} did not open device",
+                    context={"backend": name},
+                )
+            raise RuntimeError(
+                f"Failed to open camera index {self._device_index} "
+                f"(tried backends: {', '.join(tried)}). "
+                "Confirm the Pocket 3 is in Webcam mode (USB-C connected, screen "
+                "shows Webcam) and no other app is holding the camera."
+            )
+
+    def _open_file(self) -> cv2.VideoCapture:
+        with self._obs.span(
+            "capture_open", context={"source": self._source}, error_type="input_invalid"
+        ) as sp:
+            cap = cv2.VideoCapture(self._source)
+            if not cap.isOpened():
+                cap.release()
+                raise RuntimeError(f"Failed to open video file {self._source}")
+            file_fps = cap.get(cv2.CAP_PROP_FPS)
+            if file_fps > 0:
+                self._frame_interval = 1.0 / file_fps
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            logger.info(
+                f"Opened video file {self._source}: {w}x{h} @ {file_fps:.1f}fps, "
+                f"{n} frames"
+            )
+            sp.success({"width": w, "height": h, "fps": file_fps, "frame_count": n})
+            return cap
 
     def _configure(self, cap: cv2.VideoCapture) -> cv2.VideoCapture:
         # MJPG over USB gives the best 1080p30 headroom on most UVC pipelines.
@@ -123,6 +183,11 @@ class FrameGrabber:
             f"Camera negotiated {actual_w}x{actual_h} @ {actual_fps:.1f}fps "
             f"(requested {self._width}x{self._height}@{self._fps})"
         )
+        self._negotiated = {
+            "negotiated": [actual_w, actual_h, actual_fps],
+            "requested": [self._width, self._height, self._fps],
+            "negotiated_matches_request": (actual_w, actual_h) == (self._width, self._height),
+        }
         return cap
 
     def start(self) -> None:
@@ -136,22 +201,63 @@ class FrameGrabber:
 
     def _run(self) -> None:
         assert self._cap is not None
-        while not self._stop_event.is_set():
-            ok, image = self._cap.read()
-            captured_at = time.monotonic()
-            if not ok or image is None:
-                self._read_failures += 1
-                if self._read_failures == 1 or self._read_failures % 30 == 0:
-                    logger.warning(
-                        f"cap.read() failed (total={self._read_failures})"
+        next_due = time.monotonic()
+        try:
+            while not self._stop_event.is_set():
+                t0 = time.perf_counter()
+                ok, image = self._cap.read()
+                captured_at = time.monotonic()
+                read_ms = (time.perf_counter() - t0) * 1000.0
+                if not ok or image is None:
+                    if self._source is not None:
+                        logger.info(
+                            f"End of video file after {self._frames_captured} frames"
+                        )
+                        self._obs.emit(
+                            "capture_read", "skip", frame_seq=self._seq,
+                            context={"reason": "end_of_file",
+                                     "frames_captured": self._frames_captured},
+                        )
+                        self._finished.set()
+                        return
+                    self._read_failures += 1
+                    self._read_counter.record("fail", read_ms)
+                    self._obs.emit(
+                        "capture_read", "fail", duration_ms=read_ms,
+                        error_type="hardware",
+                        error_message="cap.read() returned no frame",
+                        context={"failures_total": self._read_failures},
                     )
-                time.sleep(0.05)
-                continue
-            self._seq += 1
-            self._frames_captured += 1
-            frame = Frame(image=image, captured_at=captured_at, seq=self._seq)
-            with self._lock:
-                self._latest = frame
+                    if self._read_failures == 1 or self._read_failures % 30 == 0:
+                        logger.warning(
+                            f"cap.read() failed (total={self._read_failures})"
+                        )
+                    time.sleep(0.05)
+                    continue
+                self._seq += 1
+                self._frames_captured += 1
+                frame = Frame(image=image, captured_at=captured_at, seq=self._seq)
+                with self._lock:
+                    self._latest = frame
+                self._read_counter.record("success", read_ms, frame_seq=self._seq)
+                if self._source is not None:
+                    # Deliver file frames at the file's rate, as a camera would.
+                    next_due += self._frame_interval
+                    delay = next_due - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+        except Exception as e:
+            # Not handled here before either: the thread still dies.
+            self._obs.emit(
+                "capture_read", "fail", frame_seq=self._seq, error_type="unknown",
+                error_message=describe(e), context={"thread_died": True},
+            )
+            raise
+
+    @property
+    def finished(self) -> bool:
+        """True once a file source has been read to the end."""
+        return self._finished.is_set()
 
     def read_latest(self) -> Optional[Frame]:
         """Peek the latest frame. Returns None until the first frame arrives."""
@@ -159,9 +265,16 @@ class FrameGrabber:
             return self._latest
 
     def stop(self) -> None:
+        sp = self._obs.span("capture_close")
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                self._obs.emit(
+                    "capture_close", "fail", error_type="timeout",
+                    error_message="FrameGrabber thread still alive after 2s join; "
+                                  "releasing capture anyway",
+                )
             self._thread = None
         if self._cap is not None:
             self._cap.release()
@@ -171,6 +284,8 @@ class FrameGrabber:
             f"(captured={self._frames_captured}, "
             f"failures={self._read_failures})"
         )
+        self._read_counter.flush()
+        sp.success({"captured": self._frames_captured, "failures": self._read_failures})
 
     @property
     def stats(self) -> dict[str, int]:

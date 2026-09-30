@@ -19,9 +19,11 @@ from camera import (
     list_devices,
 )
 from config_schema import AppConfig, load_config
+from obs import ObsLogger, Span, describe, new_run_id
 
 
 ROI_FILE = Path(__file__).resolve().parent / "data" / "roi.json"
+LOG_DIR = Path(__file__).resolve().parent / "logs"
 ROI_SELECT_WINDOW = "Select ROI -- drag a rectangle around the car. Enter/Space = confirm, C = whole frame"
 
 
@@ -71,14 +73,20 @@ def configure_logger() -> None:
     )
 
 
-def wait_for_enter() -> None:
+def wait_for_enter(obs: ObsLogger) -> None:
+    sp = obs.span("checklist")
     sys.stdout.write(CHECKLIST)
     sys.stdout.flush()
     try:
         input()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt) as e:
         logger.info("Aborted before camera start")
+        if isinstance(e, EOFError):
+            sp.fail("input_invalid", "stdin closed before Enter; exiting with code 0")
+        else:
+            sp.skip("keyboard_interrupt")
         sys.exit(0)
+    sp.success()
 
 
 def print_device_list(
@@ -105,10 +113,11 @@ def print_device_list(
 
 
 def resolve_device_selection(
-    config: AppConfig, devices: list[tuple[int, str]]
+    config: AppConfig, devices: list[tuple[int, str]], obs: ObsLogger
 ) -> str:
     """Sanity-check the configured device index. Returns the device name
     (or '<unknown>') and logs a warning if it looks like the wrong device."""
+    sp = obs.span("device_select", context={"device_index": config.camera.device_index})
     selected_name = next(
         (n for i, n in devices if i == config.camera.device_index), None
     )
@@ -125,6 +134,8 @@ def resolve_device_selection(
                 f"Configured device_index={config.camera.device_index} is not "
                 "in the device list and no DJI-like device was found."
             )
+        sp.fail("input_invalid", "configured device_index not in device list; continuing",
+                {"pocket_index": pocket_idx})
         return "<unknown>"
 
     kind = classify_device(selected_name)
@@ -146,10 +157,13 @@ def resolve_device_selection(
             f"'{selected_name}' looks like a built-in webcam, not the "
             f"Pocket 3.{suggestion}"
         )
+        sp.fail("input_invalid", "selected device looks like a built-in webcam; continuing",
+                {"name": selected_name, "pocket_index": pocket_idx})
     else:
         logger.info(
             f"Selected device [{config.camera.device_index}] '{selected_name}'"
         )
+    sp.success({"name": selected_name, "kind": kind})
     return selected_name
 
 
@@ -174,11 +188,32 @@ def load_or_select_roi(
     sample_image: np.ndarray,
     roi_path: Path,
     force_select: bool,
+    *,
+    headless: bool,
+    obs: ObsLogger,
 ) -> Optional[tuple[int, int, int, int]]:
     """Returns (x, y, w, h) in full-frame coords, or None for whole-frame.
     Reads from roi_path if a compatible saved ROI exists; otherwise prompts
-    the user via cv2.selectROI and persists the result."""
+    the user via cv2.selectROI and persists the result. Headless never
+    prompts: no compatible saved ROI means whole frame."""
+    with obs.span("roi_load", context={"path": str(roi_path)}) as sp:
+        return _load_or_select_roi(sample_image, roi_path, force_select, headless, obs, sp)
+
+
+def _load_or_select_roi(
+    sample_image: np.ndarray,
+    roi_path: Path,
+    force_select: bool,
+    headless: bool,
+    obs: ObsLogger,
+    sp: Span,
+) -> Optional[tuple[int, int, int, int]]:
     H, W = sample_image.shape[:2]
+    sp.context["frame_wh"] = [W, H]
+
+    if headless and force_select:
+        logger.warning("--select-roi ignored in --headless mode (no dialog)")
+        force_select = False
 
     if roi_path.exists() and not force_select:
         try:
@@ -198,16 +233,29 @@ def load_or_select_roi(
                     f"x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]} "
                     "(pass --select-roi to redo)"
                 )
+                sp.success({"source": "file", "roi": list(roi)})
                 return roi
             logger.warning(
                 f"Saved ROI was for "
                 f"{data.get('frame_width')}x{data.get('frame_height')}, "
                 f"current frame is {W}x{H}. Re-selecting."
             )
+            obs.emit(
+                "roi_load", "fail", error_type="input_invalid",
+                error_message="saved ROI resolution does not match frame",
+                context={"saved_wh": [data.get("frame_width"), data.get("frame_height")],
+                         "frame_wh": [W, H]},
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to load ROI from {roi_path}: {e}. Re-selecting."
             )
+            obs.emit("roi_load", "fail", error_type="parse", error_message=describe(e))
+
+    if headless:
+        logger.info("Headless: no compatible saved ROI -- using whole frame")
+        sp.skip("headless_whole_frame")
+        return None
 
     print()
     print("Draw a rectangle around the area to monitor (the car). "
@@ -224,6 +272,8 @@ def load_or_select_roi(
     x, y, w, h = (int(v) for v in selection)
     if w == 0 or h == 0:
         logger.info("No ROI selected -- using whole frame")
+        sp.skip("selection_empty", error_type="input_invalid",
+                error_message="cv2.selectROI returned zero width/height; using whole frame")
         return None
 
     roi_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,10 +284,18 @@ def load_or_select_roi(
     logger.info(
         f"Saved ROI to {roi_path}: x={x} y={y} w={w} h={h}"
     )
+    sp.success({"source": "dialog", "roi": [x, y, w, h]})
     return (x, y, w, h)
 
 
-def run_preview(config: AppConfig, *, force_select_roi: bool) -> None:
+def run_preview(
+    config: AppConfig,
+    *,
+    force_select_roi: bool,
+    obs: ObsLogger,
+    source: Optional[str] = None,
+    headless: bool = False,
+) -> None:
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
     from detector import Detection, Detector
 
@@ -249,17 +307,26 @@ def run_preview(config: AppConfig, *, force_select_roi: bool) -> None:
         width=config.camera.width,
         height=config.camera.height,
         fps=config.camera.fps,
+        obs=obs,
+        source=source,
     ) as grabber:
+        sp = obs.span("first_frame_wait", context={"timeout_s": 5.0})
         first_frame = _wait_for_first_frame(grabber, timeout=5.0)
         if first_frame is None:
             logger.error("No frames received within 5s -- aborting before ROI selection")
+            sp.fail("timeout", "no frames within 5s; run_preview returns normally (exit 0)")
             return
+        sp.success({"frame_seq": first_frame.seq})
 
-        roi = load_or_select_roi(first_frame.image, ROI_FILE, force_select=force_select_roi)
-        detector = Detector(config.detection, roi=roi)
+        roi = load_or_select_roi(
+            first_frame.image, ROI_FILE, force_select=force_select_roi,
+            headless=headless, obs=obs,
+        )
+        detector = Detector(config.detection, roi=roi, obs=obs)
 
-        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WINDOW_NAME, 1280, 720)
+        if not headless:
+            cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(WINDOW_NAME, 1280, 720)
 
         last_seq = 0  # 0 == none seen yet; producer seqs start at 1
         last_new_frame_time = time.monotonic()
@@ -268,17 +335,35 @@ def run_preview(config: AppConfig, *, force_select_roi: bool) -> None:
         ema_alpha = 0.1
         snap_count = 0
         skipped_total = 0  # producer frames the display never showed
+        render_counter = obs.counter(
+            "render",
+            context_fn=lambda: {
+                "skipped_total": skipped_total,
+                "display_fps_ema": round(display_fps_ema, 2),
+                "latency_ms_ema": round(latency_ms_ema, 2),
+            },
+        )
 
         while True:
             frame = grabber.read_latest()
             if frame is None:
                 # Producer hiccup mid-run; service window and try again
+                if headless:
+                    time.sleep(0.01)
+                    continue
                 if cv2.waitKey(10) & 0xFF in (ord("q"), 27):
                     return
                 continue
 
             is_new = frame.seq != last_seq
             if not is_new:
+                # A file source has ended once no newer frame can arrive.
+                if grabber.finished and grabber.read_latest().seq == last_seq:
+                    logger.info("Video source finished")
+                    return
+                if headless:
+                    time.sleep(0.005)
+                    continue
                 # No fresh producer frame -- skip redraw, just service window events.
                 # This is the main fix for skipped: we stop wasting copy+imshow
                 # cycles on frames the display already showed.
@@ -323,6 +408,11 @@ def run_preview(config: AppConfig, *, force_select_roi: bool) -> None:
                 if now - t < detection_overlay_ttl
             ]
 
+            if headless:
+                render_counter.record("skip", frame_seq=frame.seq, reason="headless")
+                continue
+
+            render_t0 = time.perf_counter()
             display = frame.image.copy()
 
             if detector.roi is not None:
@@ -366,14 +456,28 @@ def run_preview(config: AppConfig, *, force_select_roi: bool) -> None:
                 (200, 200, 200),
             )
 
-            cv2.imshow(WINDOW_NAME, display)
+            try:
+                cv2.imshow(WINDOW_NAME, display)
+            except Exception as e:
+                obs.emit("render", "fail", frame_seq=frame.seq, error_type="unknown",
+                         error_message=describe(e))
+                raise
             key = cv2.waitKey(1) & 0xFF
+            render_counter.record(
+                "success", (time.perf_counter() - render_t0) * 1000.0, frame_seq=frame.seq
+            )
             if key in (ord("q"), 27):
                 logger.info("Quit requested via keyboard")
                 return
             if key == ord("s"):
                 snap_path = Path(f"snap_{snap_count:03d}.jpg")
-                cv2.imwrite(str(snap_path), frame.image)
+                snap_sp = obs.span("snapshot_save", frame_seq=frame.seq,
+                                   context={"path": str(snap_path.resolve())})
+                written = cv2.imwrite(str(snap_path), frame.image)
+                if written:
+                    snap_sp.success()
+                else:
+                    snap_sp.fail("unknown", "cv2.imwrite returned False")
                 logger.info(f"Saved {snap_path.resolve()}")
                 snap_count += 1
 
@@ -399,6 +503,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Re-run the ROI selection dialog even if data/roi.json exists.",
     )
+    p.add_argument(
+        "--source",
+        default=None,
+        metavar="PATH",
+        help="Read frames from a video file instead of the camera. Skips the "
+             "device listing and the Pocket 3 checklist; exits 0 at end of file.",
+    )
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        help="No windows: skip the preview and the ROI dialog (uses "
+             "data/roi.json only if it matches the frame size, else whole frame).",
+    )
     return p.parse_args()
 
 
@@ -406,11 +523,27 @@ def main() -> int:
     configure_logger()
     args = parse_args()
 
-    config_path = Path(__file__).resolve().parent / "config.yaml"
-    if not config_path.exists():
-        logger.error(f"Missing config at {config_path}")
-        return 1
-    config = load_config(config_path)
+    obs = ObsLogger(new_run_id(), LOG_DIR)
+    logger.info(f"Run {obs.run_id}: structured log -> {obs.path}")
+    try:
+        with obs.span("run", context={"argv": sys.argv[1:]}) as run:
+            code = _main(args, obs, run)
+            if code != 0:
+                run.fail("unknown", f"exit code {code}", {"exit_code": code})
+            run.success({"exit_code": code})
+            return code
+    finally:
+        obs.close()
+
+
+def _main(args: argparse.Namespace, obs: ObsLogger, run: Span) -> int:
+    with obs.span("config_load", error_type="parse") as sp:
+        config_path = Path(__file__).resolve().parent / "config.yaml"
+        if not config_path.exists():
+            logger.error(f"Missing config at {config_path}")
+            sp.fail("input_invalid", f"missing config at {config_path}")
+            return 1
+        config = load_config(config_path)
 
     if args.device is not None:
         logger.info(
@@ -419,24 +552,35 @@ def main() -> int:
         )
         config.camera.device_index = args.device
 
-    devices = list_devices()
-    print_device_list(config.camera.device_index, devices)
+    if args.source is None or args.list_devices:
+        devices = list_devices(obs)
+        print_device_list(config.camera.device_index, devices)
 
-    if args.list_devices:
-        return 0
+        if args.list_devices:
+            return 0
 
-    resolve_device_selection(config, devices)
-    logger.info(
-        f"Camera config: index={config.camera.device_index} "
-        f"{config.camera.width}x{config.camera.height}@{config.camera.fps}"
-    )
-    wait_for_enter()
+        resolve_device_selection(config, devices, obs)
+        logger.info(
+            f"Camera config: index={config.camera.device_index} "
+            f"{config.camera.width}x{config.camera.height}@{config.camera.fps}"
+        )
+        wait_for_enter(obs)
+    else:
+        logger.info(
+            f"Source: video file {args.source} "
+            "(device listing and Pocket 3 checklist skipped)"
+        )
     try:
-        run_preview(config, force_select_roi=args.select_roi)
+        run_preview(
+            config, force_select_roi=args.select_roi, obs=obs,
+            source=args.source, headless=args.headless,
+        )
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
-    except Exception:
+        run.skip("keyboard_interrupt", context={"exit_code": 0})
+    except Exception as e:
         logger.exception("Preview crashed")
+        run.fail("unknown", describe(e), {"exit_code": 1})
         return 1
     finally:
         cv2.destroyAllWindows()
