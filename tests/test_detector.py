@@ -22,7 +22,7 @@ def dcfg(**overrides) -> DetectionConfig:
 
 
 def make_frame(image, seq: int) -> Frame:
-    return Frame(image=image, captured_at=0.0, seq=seq)
+    return Frame(image=image, captured_at=0.0, seq=seq, captured_wall_time=1_700_000_000.0 + seq)
 
 
 def run_frames(det: Detector, images) -> list:

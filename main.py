@@ -386,6 +386,10 @@ def run_preview(
     recent_detections: list[tuple[float, Detection]] = []
     detection_overlay_ttl = 1.5  # seconds to keep a box visible after detection
 
+    # Load the model BEFORE capture starts so no frames are lost while it
+    # loads; the ROI (which needs the first frame) is set afterwards.
+    detector = Detector(config.detection, obs=obs, predictor=predictor)
+
     with FrameGrabber(
         device_index=config.camera.device_index,
         width=config.camera.width,
@@ -412,7 +416,7 @@ def run_preview(
             first_frame.image, roi_file, force_select=force_select_roi,
             headless=headless, obs=obs,
         )
-        detector = Detector(config.detection, roi=roi, obs=obs, predictor=predictor)
+        detector.set_roi(roi)
 
         if not headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)

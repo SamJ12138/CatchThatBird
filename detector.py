@@ -22,7 +22,7 @@ class Detection:
     confidence: float
     bbox_xywh: tuple[int, int, int, int]   # full-frame coordinates
     frame_seq: int
-    captured_wall_time: float              # time.time() at detection moment
+    captured_wall_time: float              # Frame.captured_wall_time (capture moment)
 
 
 class RawBox(NamedTuple):
@@ -157,13 +157,7 @@ class Detector:
             sp.fail("input_invalid", describe(e))
             raise
 
-        if roi is not None:
-            logger.info(
-                f"Detector ROI active: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]} "
-                f"(MOG2 input area {roi[2] * roi[3]} px)"
-            )
-        else:
-            logger.info("Detector ROI: whole frame")
+        self._log_roi()
         logger.info(
             f"Detector ready: target_classes={config.yolo_target_classes} "
             f"(ids={self._target_class_ids}), "
@@ -186,6 +180,24 @@ class Detector:
             "target_class_ids": self._target_class_ids,
             "roi": list(roi) if roi is not None else None,
         })
+
+    def _log_roi(self) -> None:
+        roi = self._roi
+        if roi is not None:
+            logger.info(
+                f"Detector ROI active: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]} "
+                f"(MOG2 input area {roi[2] * roi[3]} px)"
+            )
+        else:
+            logger.info("Detector ROI: whole frame")
+
+    def set_roi(self, roi: Optional[ROI]) -> None:
+        """Set the ROI after construction (the model loads before capture
+        starts; the ROI needs the first frame). Only before the first frame."""
+        if self._frame_count:
+            raise RuntimeError("set_roi() after frames were processed")
+        self._roi = roi
+        self._log_roi()
 
     def _resolve_class_ids(self) -> list[int]:
         names: dict[int, str] = self._predictor.names
@@ -313,7 +325,6 @@ class Detector:
             sp.context.update(n_raw_boxes=len(boxes), **self._predictor.last_meta)
 
         with self._obs.span("detection_map", frame_seq=seq) as sp:
-            wall = time.time()
             detections: list[Detection] = []
             dropped_class = dropped_conf = 0
             for box in boxes:
@@ -334,7 +345,7 @@ class Detector:
                             int(box.y2 - box.y1),
                         ),
                         frame_seq=frame.seq,
-                        captured_wall_time=wall,
+                        captured_wall_time=frame.captured_wall_time,
                     )
                 )
             sp.context.update(dropped_class=dropped_class, dropped_conf=dropped_conf)

@@ -11,6 +11,8 @@ This lists every stage a run goes through, in order, as the code does it today. 
 
 ## A. Run setup (once per run)
 
+Order since phase 2 batch 3: `detector_init` (model load) runs **before** `capture_open`, and the ROI from `roi_load` is applied with `Detector.set_roi()` after `first_frame_wait`. The table keeps the original numbering.
+
 | # | Stage | Owner | Input | Output | Failure modes seen in the code |
 |---|---|---|---|---|---|
 | 0 | `run` | `main.main` (main.py:522) | argv | exit code | Crash in `run_preview` becomes exit 1. `KeyboardInterrupt` becomes exit 0. An uncaught exception from config load propagates with a traceback |
@@ -36,7 +38,7 @@ The work is split across two threads. The grabber thread runs `capture_read` con
 | 12 | `morph_contour` | `Detector.process` (detector.py:184–201) | foreground mask | largest contour + area | No contours → skip `no_contours`. Largest area < `motion_min_area` → skip `area_below_min`. Only the **largest** contour moves on |
 | 13 | `crop_build` | `Detector.process` (detector.py:204–220) | contour bbox, ROI offset, frame | padded crop `(x0,y0,x1,y1)` | Zero-size crop → skip (`input_invalid`) |
 | 14 | `yolo_infer` | `Detector.process` → `YOLO.predict` (detector.py:222–238) | crop | ultralytics `Results` | Any ultralytics/torch exception propagates → the run crashes with exit 1 (`external_api`). Empty results are normal, see the next stage |
-| 15 | `detection_map` | `Detector.process` (detector.py:240–285) | `Results`, crop origin | `[Detection]` in full-frame coords | `r.boxes is None` → skipped silently. Class/confidence re-filtered (redundant with `predict`). No boxes → skip `yolo_empty` (not an error). `captured_wall_time` is taken **after** inference |
+| 15 | `detection_map` | `Detector.process` (detector.py:240–285) | `Results`, crop origin | `[Detection]` in full-frame coords | `r.boxes is None` → skipped silently. Class/confidence re-filtered (redundant with `predict`). No boxes → skip `yolo_empty` (not an error). `captured_wall_time` is copied from `Frame.captured_wall_time` (capture moment; was taken after inference before phase 2) |
 | 16 ⏱ | `render` | `run_preview` (main.py:411–468) | frame, ROI, recent detections | preview window, HUD | `imshow` exception propagates (`unknown`). In `--headless`, every frame is a skip `headless` |
 | 16a | `snapshot_save` | `run_preview` `s` key (main.py:472–482) | current frame | `./snap_NNN.jpg` | `save_snapshot()`: `cv2.imwrite` returning False → error logged, no "Saved" line (`unknown`). Never happens in headless |
 

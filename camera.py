@@ -74,6 +74,7 @@ class Frame:
     image: np.ndarray
     captured_at: float  # time.monotonic() taken right after cap.read() returned
     seq: int
+    captured_wall_time: float  # time.time() taken at the same moment (for event timestamps)
 
 
 class FrameGrabber:
@@ -214,6 +215,7 @@ class FrameGrabber:
                 t0 = time.perf_counter()
                 ok, image = self._cap.read()
                 captured_at = time.monotonic()
+                captured_wall_time = time.time()
                 read_ms = (time.perf_counter() - t0) * 1000.0
                 if not ok or image is None:
                     if self._source is not None:
@@ -243,7 +245,8 @@ class FrameGrabber:
                     continue
                 self._seq += 1
                 self._frames_captured += 1
-                frame = Frame(image=image, captured_at=captured_at, seq=self._seq)
+                frame = Frame(image=image, captured_at=captured_at, seq=self._seq,
+                              captured_wall_time=captured_wall_time)
                 with self._lock:
                     self._latest = frame
                 self._read_counter.record("success", read_ms, frame_seq=self._seq)
