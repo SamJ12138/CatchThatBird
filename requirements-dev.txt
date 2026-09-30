@@ -3,3 +3,4 @@
 pytest>=8.3
 pytest-cov>=6.0
 coverage>=7.10          # [tool.coverage.run] patch = ["subprocess"]
+matplotlib>=3.8        # scripts/plot_visits.py

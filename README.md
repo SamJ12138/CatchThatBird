@@ -259,6 +259,17 @@ Exit codes: 0 for a normal end, including Ctrl-C and SIGTERM; 1 for an error, wi
 
 Lines are written when a visit closes: 10 s after the bird was last seen, or when the run ends. The run ends on a normal exit, an error, Ctrl-C, SIGTERM or Ctrl-Break. Only a hard kill (SIGKILL, `taskkill /F`, power loss) loses the visit in progress.
 
+**Visits per hour.** `scripts/plot_visits.py` counts visits by hour of day (the local clock in each `ts`, all days summed) and writes a bar chart. It needs matplotlib, which `requirements-dev.txt` lists and Ultralytics already installs:
+
+```
+python scripts/plot_visits.py                      # data/events.jsonl -> docs/visits.png
+python scripts/plot_visits.py path/to/events.jsonl --out visits.png --title "Week 1"
+```
+
+![Bird visits per hour of day, from the 5-event test fixture](docs/visits.png)
+
+*Made from the 5-event test fixture `tests/fixtures/events_5.jsonl`, not real observations: no bird has been logged with this setup yet. It shows the chart's format only.*
+
 **Snapshots** are named `<local time>_seq<frame, 6 digits>_d<index>_{crop,full}.jpg`, for example `20260930T140506.789_seq000091_d0_crop.jpg`.
 
 **Run logs.** Every run writes `logs/run_<run_id>.jsonl`, one line per stage event (`start`, `success`, `fail`, `skip`, with an `error_type`). Per-frame stages are summarised every 300 frames. To see what failed or was skipped and how long each stage took:
