@@ -83,7 +83,9 @@ class FrameGrabber:
 
     With `source` set, frames come from a video file instead of a camera. The
     file is read at its own frame rate (like a camera would deliver it), and
-    `finished` becomes True once the file runs out."""
+    `finished` becomes True once the file runs out. With `pace=False` a file
+    is read as fast as the consumer takes frames: the producer waits for
+    `ack(seq)` before reading the next one, so no frame is skipped."""
 
     def __init__(
         self,
@@ -94,6 +96,7 @@ class FrameGrabber:
         *,
         obs: ObsLogger,
         source: Optional[str] = None,
+        pace: bool = True,
     ) -> None:
         self._device_index = device_index
         self._width = width
@@ -101,11 +104,14 @@ class FrameGrabber:
         self._fps = fps
         self._obs = obs
         self._source = source
+        self._pace = pace
         self._frame_interval = 1.0 / fps
         self._finished = threading.Event()
         self._cap: Optional[cv2.VideoCapture] = None
         self._latest: Optional[Frame] = None
         self._lock = threading.Lock()
+        self._acked = threading.Condition(threading.Lock())
+        self._acked_seq = 0
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._seq = 0
@@ -240,12 +246,18 @@ class FrameGrabber:
                 with self._lock:
                     self._latest = frame
                 self._read_counter.record("success", read_ms, frame_seq=self._seq)
-                if self._source is not None:
+                if self._source is not None and self._pace:
                     # Deliver file frames at the file's rate, as a camera would.
                     next_due += self._frame_interval
                     delay = next_due - time.monotonic()
                     if delay > 0:
                         time.sleep(delay)
+                elif self._source is not None:
+                    # Unpaced: hand frames over one at a time, never overwrite.
+                    with self._acked:
+                        while (self._acked_seq < self._seq
+                               and not self._stop_event.is_set()):
+                            self._acked.wait(0.05)
         except Exception as e:
             # Not handled here before either: the thread still dies.
             self._obs.emit(
@@ -258,6 +270,13 @@ class FrameGrabber:
     def finished(self) -> bool:
         """True once a file source has been read to the end."""
         return self._finished.is_set()
+
+    def ack(self, seq: int) -> None:
+        """Consumer is done with frame `seq`. Only an unpaced file source waits
+        on this; for cameras and paced files it just records the seq."""
+        with self._acked:
+            self._acked_seq = max(self._acked_seq, seq)
+            self._acked.notify_all()
 
     def read_latest(self) -> Optional[Frame]:
         """Peek the latest frame. Returns None until the first frame arrives."""

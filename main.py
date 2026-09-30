@@ -295,6 +295,7 @@ def run_preview(
     obs: ObsLogger,
     source: Optional[str] = None,
     headless: bool = False,
+    pace: bool = True,
 ) -> None:
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
     from detector import Detection, Detector
@@ -309,6 +310,7 @@ def run_preview(
         fps=config.camera.fps,
         obs=obs,
         source=source,
+        pace=pace,
     ) as grabber:
         sp = obs.span("first_frame_wait", context={"timeout_s": 5.0})
         first_frame = _wait_for_first_frame(grabber, timeout=5.0)
@@ -402,6 +404,7 @@ def run_preview(
                     f"{det.bbox_xywh[2]},{det.bbox_xywh[3]})"
                 )
                 recent_detections.append((now, det))
+            grabber.ack(frame.seq)
 
             recent_detections = [
                 (t, d) for t, d in recent_detections
@@ -516,6 +519,12 @@ def parse_args() -> argparse.Namespace:
         help="No windows: skip the preview and the ROI dialog (uses "
              "data/roi.json only if it matches the frame size, else whole frame).",
     )
+    p.add_argument(
+        "--no-pace",
+        action="store_true",
+        help="With --source: read the file as fast as the pipeline consumes it "
+             "(no real-time pacing, no dropped frames). For tests.",
+    )
     return p.parse_args()
 
 
@@ -573,7 +582,7 @@ def _main(args: argparse.Namespace, obs: ObsLogger, run: Span) -> int:
     try:
         run_preview(
             config, force_select_roi=args.select_roi, obs=obs,
-            source=args.source, headless=args.headless,
+            source=args.source, headless=args.headless, pace=not args.no_pace,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
