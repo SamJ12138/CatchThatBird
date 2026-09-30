@@ -1,5 +1,7 @@
 # CatchThatBird
 
+[![CI](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml/badge.svg)](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml)
+
 CatchThatBird keeps a passive log of birds visiting a parked car, seen through a webcam (a DJI Osmo Pocket 3 in webcam mode, in the author's setup). It writes one line per visit to `data/events.jsonl`, plus a snapshot of each bird, so visit times can be analysed later. It sends no alerts and records no video. Detection is two-stage so that a laptop CPU is enough. Cheap background subtraction (MOG2) watches a region around the car on every frame, and the YOLOv8n neural network runs only on a small crop around motion, about once a second.
 
 ## Quickstart
@@ -276,7 +278,7 @@ python -m pytest                        # adds the one test that loads the real 
 python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 ```
 
-CI: TODO: add the badge after the first push. It will be `[![CI](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml/badge.svg)](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml)`. The workflow (`.github/workflows/ci.yml`) runs the fast suite on Ubuntu and Windows with Python 3.12.
+CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
 The `slow` marker covers exactly one test, which runs the real model in a subprocess. Everything else uses test doubles from `tests/fakes.py`:
 

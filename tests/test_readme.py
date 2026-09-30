@@ -82,3 +82,10 @@ def test_every_cli_flag_is_documented(readme: str, capsys) -> None:
 
 def test_no_emoji(readme: str) -> None:
     assert not re.search("[\U0001F300-\U0001FAFF☀-➿]", readme)
+
+
+def test_ci_badge_points_at_the_workflow(readme: str) -> None:
+    badge = ("[![CI](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml/badge.svg)]"
+             "(https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml)")
+    assert badge in readme.split("\n## ", 1)[0]  # at the top, before the first section
+    assert "TODO: add the badge" not in readme
