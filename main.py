@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.yaml"
-ROI_FILE = Path(__file__).resolve().parent / "data" / "roi.json"
+ROI_FILE = Path(__file__).resolve().parent / "data" / "roi.json"  # per-machine, gitignored
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 ASPECT_TOLERANCE = 0.01  # relative; 1920x1080 vs 1280x720 match, 640x480 does not
 
@@ -304,6 +304,11 @@ def save_snapshot(path: Path, image: np.ndarray, obs: ObsLogger, *, frame_seq: i
     return False
 
 
+def example_roi_path(roi_path: Path) -> Path:
+    """The tracked example next to a (gitignored) ROI file: data/roi.example.json."""
+    return roi_path.with_name("roi.example.json")
+
+
 def load_or_select_roi(
     sample_image: np.ndarray,
     roi_path: Path,
@@ -315,7 +320,8 @@ def load_or_select_roi(
     """Returns (x, y, w, h) in full-frame coords, or None for whole-frame.
     Reads from roi_path if a compatible saved ROI exists; otherwise prompts
     the user via cv2.selectROI and persists the result. Headless never
-    prompts: no compatible saved ROI means whole frame."""
+    prompts: without roi_path it uses roi.example.json next to it (with a
+    warning, nothing written), and without either it uses the whole frame."""
     with obs.span("roi_load", context={"path": str(roi_path)}) as sp:
         return _load_or_select_roi(sample_image, roi_path, force_select, headless, obs, sp)
 
@@ -335,35 +341,45 @@ def _load_or_select_roi(
         logger.warning("--select-roi ignored in --headless mode (no dialog)")
         force_select = False
 
-    if roi_path.exists() and not force_select:
+    source_path, label = roi_path, "file"
+    example = example_roi_path(roi_path)
+    if headless and not roi_path.exists() and example.exists():
+        logger.warning(
+            f"No {roi_path.name} yet: using the example ROI in {example.name}, which was "
+            "drawn for another camera. Run without --headless once to draw your own"
+        )
+        source_path, label = example, "example"
+        sp.context["path"] = str(example)
+
+    if source_path.exists() and not force_select:
         try:
-            data = json.loads(roi_path.read_text())
+            data = json.loads(source_path.read_text())
             saved_w, saved_h = int(data["frame_width"]), int(data["frame_height"])
             if saved_w <= 0 or saved_h <= 0:
                 raise ValueError(f"frame size {saved_w}x{saved_h} is not positive")
             if data.get("whole_frame") is True:
-                logger.info(f"ROI file {roi_path} says whole frame (pass --select-roi to redo)")
-                sp.success({"source": "file_whole_frame", "roi": None})
+                logger.info(f"ROI file {source_path} says whole frame (pass --select-roi to redo)")
+                sp.success({"source": f"{label}_whole_frame", "roi": None})
                 return None
             roi = (int(data["x"]), int(data["y"]), int(data["w"]), int(data["h"]))
         except (OSError, ValueError, KeyError, TypeError) as e:
             logger.warning(
-                f"Failed to load ROI from {roi_path}: {e}. Re-selecting."
+                f"Failed to load ROI from {source_path}: {e}. Re-selecting."
             )
             obs.emit("roi_load", "fail", error_type="parse", error_message=describe(e))
             if headless:
                 raise ExitError(
-                    f"Cannot read ROI file {roi_path} ({e}); fix or delete it, or run "
+                    f"Cannot read ROI file {source_path} ({e}); fix or delete it, or run "
                     "without --headless to select a new ROI"
                 ) from e
         else:
             if (saved_w, saved_h) == (W, H):
                 logger.info(
-                    f"Loaded ROI from {roi_path}: "
+                    f"Loaded ROI from {source_path}: "
                     f"x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]} "
                     "(pass --select-roi to redo)"
                 )
-                sp.success({"source": "file", "roi": list(roi)})
+                sp.success({"source": label, "roi": list(roi)})
                 return roi
             obs.emit(
                 "roi_load", "fail", error_type="input_invalid",
@@ -377,7 +393,7 @@ def _load_or_select_roi(
                     f"{W}x{H} (same aspect ratio): rescaled to "
                     f"x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}"
                 )
-                sp.success({"source": "file_rescaled", "roi": list(roi),
+                sp.success({"source": f"{label}_rescaled", "roi": list(roi),
                             "saved_wh": [saved_w, saved_h]})
                 return roi
             logger.warning(
@@ -386,7 +402,7 @@ def _load_or_select_roi(
             )
             if headless:
                 raise ExitError(
-                    f"Saved ROI in {roi_path} is for {saved_w}x{saved_h} but frames are "
+                    f"Saved ROI in {source_path} is for {saved_w}x{saved_h} but frames are "
                     f"{W}x{H} (different aspect ratio); run without --headless and "
                     "pass --select-roi"
                 )
@@ -697,8 +713,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--headless",
         action="store_true",
-        help="No windows: skip the preview and the ROI dialog (uses "
-             "data/roi.json only if it matches the frame size, else whole frame).",
+        help="No windows: skip the preview and the ROI dialog. Uses data/roi.json "
+             "(rescaled if the aspect ratio matches), else data/roi.example.json, "
+             "else the whole frame.",
     )
     p.add_argument(
         "--no-pace",

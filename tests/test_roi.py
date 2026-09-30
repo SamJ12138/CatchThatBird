@@ -63,6 +63,40 @@ def test_headless_without_roi_file_uses_whole_frame(tmp_path, obs, dialog) -> No
     assert dialog.calls == 0
 
 
+def test_headless_falls_back_to_the_example_roi_with_a_warning(tmp_path, obs, dialog,
+                                                               log_messages) -> None:
+    """No roi.json yet (a fresh clone): headless runs use roi.example.json
+    next to it, rescaled to the frame, and say so. Nothing is written."""
+    write_roi(tmp_path / "roi.example.json", SAVED_1080P)
+    path = tmp_path / "roi.json"
+
+    roi = load(path, frame(640, 360), obs, headless=True)
+
+    assert roi == (237, 142, 209, 157)
+    assert not path.exists()
+    assert dialog.calls == 0
+    assert any(level == "WARNING" and "roi.example.json" in m for level, m in log_messages)
+    obs.close()
+    end = [l for l in read_log(obs.path) if l["stage"] == "roi_load" and l["event"] != "start"][-1]
+    assert end["event"] == "success" and end["context"]["source"] == "example_rescaled"
+
+
+def test_interactive_without_roi_file_opens_the_dialog_even_with_an_example(tmp_path, obs,
+                                                                            dialog) -> None:
+    write_roi(tmp_path / "roi.example.json", SAVED_1080P)
+    path = tmp_path / "roi.json"
+    assert load(path, frame(640, 360), obs, headless=False) == (10, 20, 30, 40)
+    assert dialog.calls == 1 and path.exists()
+
+
+def test_the_repo_ships_an_example_roi_next_to_the_default_roi_file() -> None:
+    assert main.ROI_FILE.name == "roi.json"
+    example = main.example_roi_path(main.ROI_FILE)
+    assert example == main.ROI_FILE.with_name("roi.example.json")
+    data = json.loads(example.read_text())
+    assert {"x", "y", "w", "h", "frame_width", "frame_height"} <= set(data)
+
+
 # ---------------------------------------------------------------- mismatch
 
 @pytest.mark.parametrize("headless", [True, False])

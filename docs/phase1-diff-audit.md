@@ -1,4 +1,4 @@
-# Phase 1 diff audit (`git diff 2f98698 bb06fc6`)
+# Phase 1 diff audit (`git diff 4cf95da 7633218`)
 
 Scope: `camera.py`, `detector.py`, `main.py`. There are 30 hunks: 9 in camera.py, 5 in detector.py, and 16 in main.py.
 

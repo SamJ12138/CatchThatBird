@@ -1,17 +1,27 @@
-# Phases 3-6 will add: streamlit, plotly, scikit-learn, scipy.
+# Runtime dependencies. Test tooling: requirements-dev.txt.
+
+# PyTorch, pinned. CPU build by default: YOLOv8n runs about once a second on
+# a small motion crop, which a laptop CPU handles.
+# The extra index below serves the CPU-only wheels (about 200 MB, against
+# several GB for PyPI's default CUDA build on Linux). pip picks
+# "2.12.0+cpu" from it, since a local version label sorts above the plain
+# "2.12.0". Where the index has no CPU wheel (macOS), PyPI's is used.
+#
+# NVIDIA GPU (CUDA): install the CUDA build of the same versions FIRST, then
+# this file; pip keeps the installed build because it satisfies the pin:
+#   pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/<cuda tag>
+# Pick <cuda tag> for your driver at https://pytorch.org/get-started/locally/
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0
+torchvision==0.27.0
+ultralytics>=8.1
+
 opencv-python>=4.10
 numpy>=1.26
 pydantic>=2.6
 pyyaml>=6.0
 loguru>=0.7
 
-# Windows-only: enumerates UVC device names so we can pick the Pocket 3 by name
-# instead of guessing indexes. Enumeration order matches OpenCV's CAP_DSHOW.
+# Windows only: enumerates UVC device names so the Pocket 3 can be picked by
+# name instead of by guessing indexes. Enumeration order matches OpenCV's CAP_DSHOW.
 pygrabber>=0.2; sys_platform == "win32"
-
-# Phase 2: detection. NOTE on GPU acceleration --
-# Install torch with a CUDA wheel BEFORE running `pip install -r requirements.txt`:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-# (Swap cu124 for cu121 or cu118 if your NVIDIA driver is older. The CPU
-# wheel works too -- YOLOv8n at 1 fps is well within CPU budget.)
-ultralytics>=8.1

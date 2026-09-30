@@ -12,6 +12,9 @@ snap_*.jpg
 logs/
 data/samples/
 
+# Per-machine ROI (drawn with the dialog); data/roi.example.json is tracked
+data/roi.json
+
 # Model weights (downloaded at runtime by ultralytics)
 *.pt
 

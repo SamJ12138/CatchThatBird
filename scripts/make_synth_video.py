@@ -1,5 +1,6 @@
 """Generate a synthetic test clip: static grey background with a small dark
-blob moving back and forth across the car ROI from data/roi.json.
+blob moving back and forth across the car ROI from data/roi.json (or
+data/roi.example.json on a fresh clone).
 
 YOLO will not call the blob a bird. The clip exists to push every pipeline
 stage (MOG2 -> gate -> contours -> crop -> YOLO) through a run of
@@ -19,6 +20,12 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def default_roi_path(data_dir: Path = ROOT / "data") -> Path:
+    """data/roi.json if this machine has one, else the tracked example."""
+    own = data_dir / "roi.json"
+    return own if own.exists() else data_dir / "roi.example.json"
 
 
 def scaled_roi(roi_path: Path, width: int, height: int) -> tuple[int, int, int, int]:
@@ -85,7 +92,8 @@ def make_video(
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--out", type=Path, default=ROOT / "data" / "samples" / "synth_blob.mp4")
-    p.add_argument("--roi", type=Path, default=ROOT / "data" / "roi.json")
+    p.add_argument("--roi", type=Path, default=None,
+                   help="ROI file (default: data/roi.json, else data/roi.example.json)")
     p.add_argument("--seconds", type=float, default=20.0)
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
@@ -93,6 +101,8 @@ def main() -> int:
     p.add_argument("--passes", type=int, default=3, help="left-right sweeps across the ROI")
     p.add_argument("--noise", type=float, default=2.0, help="per-pixel Gaussian noise sigma")
     args = p.parse_args()
+    if args.roi is None:
+        args.roi = default_roi_path()
 
     # ROI is stored in the coordinates of the frame it was drawn on; scale it.
     roi = scaled_roi(args.roi, args.width, args.height)
