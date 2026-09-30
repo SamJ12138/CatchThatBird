@@ -497,6 +497,8 @@ def run_preview(
     events = EventLogger(
         config.logging, config.storage, obs.run_id, obs=obs,
         dedupe_within_seconds=config.detection.dedupe_within_seconds,
+        iou_threshold=config.detection.visit_iou_threshold,
+        center_distance=config.detection.visit_center_distance,
         root=data_root,
     )
 
@@ -599,7 +601,9 @@ def run_preview(
             last_seq = frame.seq
 
             with shutdown.deferred():
-                detections = detector.process(frame)
+                # Open visits are tracked past the motion gate (P9).
+                detections = detector.process(
+                    frame, tracks=events.open_tracks(frame.captured_wall_time))
                 for det in detections:
                     logger.info(
                         f"{det.class_name.upper()} detected "

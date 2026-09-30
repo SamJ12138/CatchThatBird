@@ -1,9 +1,13 @@
 """Phase 3: persist bird visits to events.jsonl + snapshots.
 
 One JSON line per *visit*. A visit opens on a detection that matches no open
-visit, and absorbs later detections of the same class with IoU >= 0.5 (against
-the visit's most recent box) within `dedupe_within_seconds` of its last
-sighting. Open visits live in memory and are written when they expire (checked
+visit, and absorbs later detections of the same class within
+`dedupe_within_seconds` of its last sighting whose box has IoU >= 0.3 with the
+visit's most recent box, or whose centre is within 2 x max(w, h) of that box's
+centre (both configurable; the centre rule keeps a hop or a truncated box in
+the same visit). While a visit is open, main.py passes open_tracks() to the
+Detector, which runs YOLO on each open visit's last box every gated frame, so
+a bird that sits still keeps confirming its visit. Open visits live in memory and are written when they expire (checked
 on every handled frame) or when the logger closes, so `last_seen` and
 `visit_frames` are final when the line is written. Lines therefore appear in
 visit-close order; sort by `ts` to get visit-open order.
@@ -30,28 +34,23 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import math
+
 import cv2
 import numpy as np
 from loguru import logger
 
 from camera import Frame
 from config_schema import PROJECT_ROOT, LoggingConfig, StorageConfig, resolve_path
-from detector import Detection
+from detector import Detection, iou
 from obs import ObsLogger, describe
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 BBox = tuple[int, int, int, int]
 
 
-def iou(a: BBox, b: BBox) -> float:
-    """Intersection over union of two (x, y, w, h) boxes."""
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    iw = max(0, min(ax + aw, bx + bw) - max(ax, bx))
-    ih = max(0, min(ay + ah, by + bh) - max(ay, by))
-    inter = iw * ih
-    union = aw * ah + bw * bh - inter
-    return inter / union if union > 0 else 0.0
+def center_distance(a: BBox, b: BBox) -> float:
+    return math.hypot((a[0] + a[2] / 2) - (b[0] + b[2] / 2), (a[1] + a[3] / 2) - (b[1] + b[3] / 2))
 
 
 def _local(t: float) -> datetime:
@@ -87,7 +86,8 @@ class EventLogger:
         *,
         obs: ObsLogger,
         dedupe_within_seconds: float = 10.0,
-        iou_threshold: float = 0.5,
+        iou_threshold: float = 0.3,
+        center_distance: float = 2.0,
         root: Path = PROJECT_ROOT,
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -111,6 +111,7 @@ class EventLogger:
         self._retention_days = storage_cfg.retention_days
         self._window = float(dedupe_within_seconds)
         self._iou_threshold = iou_threshold
+        self._center_distance = center_distance
 
         self._open: list[_Visit] = []
         self._capped_days: set[date] = set()
@@ -161,6 +162,11 @@ class EventLogger:
             event = self._open_visit(frame, det, index)
             opened.append(event)
         return opened
+
+    def open_tracks(self, t: float) -> list[BBox]:
+        """Last box of every visit still open at time `t` (for the Detector's
+        track crops)."""
+        return [v.last_bbox for v in self._open if t - v.last_seen <= self._window]
 
     def close(self) -> None:
         """Write every still-open visit. Safe to call twice."""
@@ -220,13 +226,21 @@ class EventLogger:
         return counts
 
     def _match(self, det: Detection, t: float) -> Optional[_Visit]:
-        best, best_iou = None, self._iou_threshold
+        """The open visit this detection belongs to: same class, within the
+        window, and IoU >= threshold or centre within center_distance x
+        max(w, h) of the visit's last box. Best overlap wins, then nearest."""
+        best, best_key = None, None
         for visit in self._open:
             if visit.class_name != det.class_name or t - visit.last_seen > self._window:
                 continue
             overlap = iou(visit.last_bbox, det.bbox_xywh)
-            if overlap >= best_iou:
-                best, best_iou = visit, overlap
+            dist = center_distance(visit.last_bbox, det.bbox_xywh)
+            reach = self._center_distance * max(visit.last_bbox[2], visit.last_bbox[3])
+            if overlap < self._iou_threshold and dist > reach:
+                continue
+            key = (overlap, -dist)
+            if best_key is None or key > best_key:
+                best, best_key = visit, key
         return best
 
     def _expire(self, t: float) -> None:

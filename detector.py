@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Optional, Protocol
+from typing import Any, NamedTuple, Optional, Protocol, Sequence
 
 import cv2
 import numpy as np
@@ -16,6 +16,29 @@ from obs import ObsLogger, describe
 ROI = tuple[int, int, int, int]  # (x, y, w, h) in full-frame coords
 
 
+def iou(a: ROI, b: ROI) -> float:
+    """Intersection over union of two (x, y, w, h) boxes."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    iw = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    ih = max(0, min(ay + ah, by + bh) - max(ay, by))
+    inter = iw * ih
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _padded_xyxy(box: ROI, pad: int, shape: tuple[int, ...]) -> tuple[int, int, int, int]:
+    """(x, y, w, h) grown by `pad` on every side and clamped to the frame."""
+    x, y, w, h = box
+    return (max(0, x - pad), max(0, y - pad), min(shape[1], x + w + pad), min(shape[0], y + h + pad))
+
+
+def _contains(xyxy: tuple[int, int, int, int], box: ROI) -> bool:
+    x0, y0, x1, y1 = xyxy
+    x, y, w, h = box
+    return x0 <= x and y0 <= y and x + w <= x1 and y + h <= y1
+
+
 @dataclass(frozen=True)
 class Detection:
     class_name: str
@@ -24,6 +47,17 @@ class Detection:
     frame_seq: int
     captured_wall_time: float              # Frame.captured_wall_time (capture moment)
     crop_xyxy: tuple[int, int, int, int] = (0, 0, 0, 0)  # padded predictor crop, full-frame
+
+
+def _dedupe(detections: list["Detection"], threshold: float = 0.5) -> list["Detection"]:
+    """One detection per bird when the motion and a track crop both saw it:
+    same class and IoU >= threshold -> keep the more confident one."""
+    kept: list[Detection] = []
+    for d in sorted(detections, key=lambda d: -d.confidence):
+        if not any(k.class_name == d.class_name and iou(k.bbox_xywh, d.bbox_xywh) >= threshold
+                   for k in kept):
+            kept.append(d)
+    return kept
 
 
 class RawBox(NamedTuple):
@@ -169,6 +203,8 @@ class Detector:
 
         self._frame_count = 0
         self._warmup_logged = False
+        self._background: Optional[np.ndarray] = None  # MOG2 background, refreshed per gated frame
+        self.last_motion_area = 0.0  # largest contour on the last gated frame (for tests)
         self._motion_gates_opened = 0
         self._yolo_invocations = 0
         self._detections_total = 0
@@ -222,21 +258,47 @@ class Detector:
     def roi(self) -> Optional[ROI]:
         return self._roi
 
-    def process(self, frame: Frame) -> list[Detection]:
-        """Always updates MOG2 (on ROI region if set). Runs the motion gate +
-        YOLO only every N frames after warmup. Returns [] when no qualifying
-        detection is found."""
+    def process(self, frame: Frame, tracks: Sequence[ROI] = ()) -> list[Detection]:
+        """Always updates MOG2 (on the ROI region if set). On every Nth frame
+        after warm-up (a gated frame) YOLO runs on:
+          - the padded box around the largest motion contour, if it is at
+            least motion_min_area ("motion" crop), and
+          - the padded last box of every open visit in `tracks`, whether or
+            not MOG2 saw motion there ("track" crop, P9), unless the motion
+            crop already contains that box.
+        `tracks` (full-frame x, y, w, h) are also kept out of the MOG2 update:
+        their padded boxes are replaced with the model's own background image
+        before apply(), so a bird that sits still is never learned into the
+        background. Returns [] when nothing qualifies."""
         if self._roi is not None:
             rx, ry, rw, rh = self._roi
             region = frame.image[ry:ry + rh, rx:rx + rw]
         else:
             rx, ry, rw, rh = 0, 0, frame.image.shape[1], frame.image.shape[0]
             region = frame.image
+        pad = self._config.motion_padding_px
 
         seq = frame.seq
+        n_next = self._frame_count + 1
+        warmup, every = self._config.motion_warmup_frames, self._config.process_every_n_frames
+        gated_next = n_next > warmup and (n_next - warmup - 1) % every == 0
+        if self._frame_count and gated_next and not tracks:
+            # Once a second, while no visit is open, and BEFORE this frame is
+            # applied: the bird-free background that masks tracked boxes. It
+            # is not refreshed while a visit is open, because the frames just
+            # before the visit opened already taught the model part of the bird.
+            self._background = self._mog2.getBackgroundImage()
+        update = region
+        if tracks and self._background is not None:
+            update = region.copy()
+            for x, y, w, h in tracks:
+                x0, y0 = max(0, x - rx - pad), max(0, y - ry - pad)
+                x1, y1 = min(rw, x - rx + w + pad), min(rh, y - ry + h + pad)
+                if x1 > x0 and y1 > y0:
+                    update[y0:y1, x0:x1] = self._background[y0:y1, x0:x1]
         t0 = time.perf_counter()
         try:
-            fg_mask = self._mog2.apply(region)
+            fg_mask = self._mog2.apply(update)
         except Exception as e:
             self._obs.emit(
                 "mog2_apply", "fail", frame_seq=seq, error_type="unknown",
@@ -276,6 +338,29 @@ class Detector:
             return []
         self._gate_counter.record("success", frame_seq=seq)
 
+        crops: list[tuple[str, tuple[int, int, int, int]]] = []
+        motion_xyxy = self._motion_crop(frame, fg_mask, (rx, ry), pad)
+        if motion_xyxy is not None:
+            crops.append(("motion", motion_xyxy))
+        for box in tracks:
+            if motion_xyxy is not None and _contains(motion_xyxy, box):
+                continue  # the motion crop already shows this bird
+            crops.append(("track", _padded_xyxy(box, pad, frame.image.shape)))
+
+        detections: list[Detection] = []
+        for kind, xyxy in crops:
+            detections += self._classify(frame, kind, xyxy)
+        detections = _dedupe(detections)
+        self._detections_total += len(detections)
+        return detections
+
+    def _motion_crop(
+        self, frame: Frame, fg_mask: np.ndarray, offset: tuple[int, int], pad: int,
+    ) -> Optional[tuple[int, int, int, int]]:
+        """Padded full-frame crop (x0, y0, x1, y1) around the largest motion
+        contour, or None if there is none of at least motion_min_area."""
+        seq = frame.seq
+        self.last_motion_area = 0.0
         with self._obs.span("morph_contour", frame_seq=seq) as sp:
             # Morphology cleanup -- run only on the gated frame so cost stays 1/sec.
             fg_clean = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._morph_kernel)
@@ -286,29 +371,29 @@ class Detector:
             )
             if not contours:
                 sp.skip("no_contours")
-                return []
+                return None
             largest = max(contours, key=cv2.contourArea)
             area = cv2.contourArea(largest)
+            self.last_motion_area = area
             sp.context.update(n_contours=len(contours), largest_area=area)
             if area < self._config.motion_min_area:
                 sp.skip("area_below_min",
                         context={"motion_min_area": self._config.motion_min_area})
-                return []
+                return None
         self._motion_gates_opened += 1
+        x, y, w, h = cv2.boundingRect(largest)
+        # Contour coords are relative to the ROI region; translate to full frame.
+        return _padded_xyxy((offset[0] + x, offset[1] + y, w, h), pad, frame.image.shape)
 
-        with self._obs.span("crop_build", frame_seq=seq) as sp:
-            H_full, W_full = frame.image.shape[:2]
-            x, y, w, h = cv2.boundingRect(largest)
-            # Contour coords are relative to the ROI region; translate to full frame.
-            fx = rx + x
-            fy = ry + y
-            pad = self._config.motion_padding_px
-            x0 = max(0, fx - pad)
-            y0 = max(0, fy - pad)
-            x1 = min(W_full, fx + w + pad)
-            y1 = min(H_full, fy + h + pad)
+    def _classify(
+        self, frame: Frame, kind: str, xyxy: tuple[int, int, int, int],
+    ) -> list[Detection]:
+        """Run the predictor on one crop; boxes mapped back to full-frame coords."""
+        seq = frame.seq
+        x0, y0, x1, y1 = xyxy
+        with self._obs.span("crop_build", frame_seq=seq, context={"crop": kind}) as sp:
             crop = frame.image[y0:y1, x0:x1]
-            sp.context.update(motion_bbox_xywh=[fx, fy, w, h], crop_xyxy=[x0, y0, x1, y1])
+            sp.context.update(crop_xyxy=[x0, y0, x1, y1])
             if crop.size == 0:
                 sp.skip("empty_crop", error_type="input_invalid",
                         error_message="padded crop has zero size")
@@ -317,7 +402,7 @@ class Detector:
         self._yolo_invocations += 1
         with self._obs.span(
             "yolo_infer", frame_seq=seq, error_type="external_api",
-            context={"crop_wh": [x1 - x0, y1 - y0], "device": self._device},
+            context={"crop": kind, "crop_wh": [x1 - x0, y1 - y0], "device": self._device},
         ) as sp:
             boxes = self._predictor.predict(
                 crop,
@@ -328,7 +413,7 @@ class Detector:
             )
             sp.context.update(n_raw_boxes=len(boxes), **self._predictor.last_meta)
 
-        with self._obs.span("detection_map", frame_seq=seq) as sp:
+        with self._obs.span("detection_map", frame_seq=seq, context={"crop": kind}) as sp:
             detections: list[Detection] = []
             dropped_class = dropped_conf = 0
             for box in boxes:
@@ -365,8 +450,6 @@ class Detector:
                         for d in detections
                     ],
                 })
-
-        self._detections_total += len(detections)
         return detections
 
     @property

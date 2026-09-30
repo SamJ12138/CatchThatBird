@@ -162,13 +162,47 @@ def test_visit_closes_after_dedupe_window(tmp_path, obs) -> None:
     assert [e["frame_seq"] for e in events(el)] == [90, 500]
 
 
-def test_low_iou_is_a_new_event(tmp_path, obs) -> None:
+def test_a_detection_far_from_the_visit_is_a_new_event(tmp_path, obs) -> None:
+    """Joins only if IoU >= 0.3 or the centre is within 2 x max(w, h) of the
+    visit's last centre (defaults). 61 px away from a 30x20 box: neither."""
     el = make_logger(tmp_path, obs)
     f1, f2 = frame(90, T0), frame(120, T0 + 1)
     el.handle(f1, [det(f1, bbox=(100, 80, 30, 20))])
-    el.handle(f2, [det(f2, bbox=(118, 80, 30, 20))])  # IoU = 12*20 / (2*600 - 240) = 0.25
+    el.handle(f2, [det(f2, bbox=(161, 80, 30, 20))])
     el.close()
     assert len(events(el)) == 2
+
+
+def test_a_low_iou_detection_near_the_centre_joins_the_visit(tmp_path, obs) -> None:
+    """P10: 18 px drift on a 30 px box is IoU 0.25 (a new visit before); its
+    centre is 18 px away, within 2 x 30."""
+    el = make_logger(tmp_path, obs)
+    f1, f2 = frame(90, T0), frame(120, T0 + 1)
+    el.handle(f1, [det(f1, bbox=(100, 80, 30, 20))])
+    el.handle(f2, [det(f2, bbox=(118, 80, 30, 20))])
+    el.close()
+    (ev,) = events(el)
+    assert ev["visit_frames"] == 2
+
+
+def test_a_truncated_box_inside_the_visit_joins_it(tmp_path, obs) -> None:
+    """P10: a motion crop that cuts the bird off gives a smaller box (73x60 in
+    a 103x67 bird); IoU 0.42 against the last box used to split the visit."""
+    el = make_logger(tmp_path, obs)
+    f1, f2 = frame(90, T0), frame(120, T0 + 1)
+    el.handle(f1, [det(f1, bbox=(632, 456, 75, 57))])
+    el.handle(f2, [det(f2, bbox=(604, 456, 73, 60))])
+    el.close()
+    assert len(events(el)) == 1
+
+
+def test_open_tracks_are_the_last_boxes_of_visits_still_open(tmp_path, obs) -> None:
+    el = make_logger(tmp_path, obs)
+    f = frame(90, T0)
+    el.handle(f, [det(f, bbox=(10, 10, 30, 20)), det(f, bbox=(250, 200, 30, 20))])
+    assert sorted(el.open_tracks(T0 + 5)) == [(10, 10, 30, 20), (250, 200, 30, 20)]
+    assert el.open_tracks(T0 + 10.5) == []            # past dedupe_within_seconds
+    el.close()
 
 
 def test_two_birds_far_apart_in_the_same_second_are_two_events(tmp_path, obs) -> None:

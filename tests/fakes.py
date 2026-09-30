@@ -197,6 +197,9 @@ class FakePredictor:
     crop_boxes: [(x1, y1, x2, y2), ...] in CROP pixels, returned on every call
         (for testing the crop -> full-frame mapping itself).
     Any other frame_seq returns no boxes.
+    within_crop: like real YOLO, only return boxes whose centre lies inside
+        the crop it was given (default False: every call on that frame
+        returns every box, whatever the crop).
     """
 
     def __init__(
@@ -209,7 +212,9 @@ class FakePredictor:
         load_delay: float = 0.0,
         predict_delay: float = 0.0,
         sleep: Callable[[float], None] = time.sleep,
+        within_crop: bool = False,
     ) -> None:
+        self.within_crop = within_crop
         self.boxes_by_seq = {
             int(k): [tuple(b) for b in v] for k, v in (boxes_by_seq or {}).items()
         }
@@ -249,8 +254,12 @@ class FakePredictor:
             {"frame_seq": frame_seq, "origin": tuple(origin), "crop_shape": crop.shape[:2]}
         )
         ox, oy = origin
+        ch, cw = crop.shape[:2]
         out = [RawBox(self.cls_id, self.conf, *b) for b in self.crop_boxes]
         for x, y, w, h in self.boxes_by_seq.get(frame_seq, []):
+            cx, cy = x + w / 2, y + h / 2
+            if self.within_crop and not (ox <= cx < ox + cw and oy <= cy < oy + ch):
+                continue
             out.append(RawBox(self.cls_id, self.conf, x - ox, y - oy, x - ox + w, y - oy + h))
         self.last_meta = {"n_results": 1, "n_results_without_boxes": 0}
         return out

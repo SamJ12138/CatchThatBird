@@ -92,6 +92,7 @@ class FrameGrabber:
 
     With `source` set, frames come from a video file instead of a camera. The
     file is read at its own frame rate (like a camera would deliver it), and
+    Frame.captured_wall_time is media time (first read + (seq - 1) / fps), and
     `finished` becomes True once the file runs out. With `pace=False` a file
     is read as fast as the consumer takes frames: the producer waits for
     `ack(seq)` before reading the next one, so no frame is skipped.
@@ -142,6 +143,7 @@ class FrameGrabber:
         self._join_timeout_s = join_timeout_s
         self._reopen_attempt = 0  # index into the backoff schedule
         self._frame_interval = 1.0 / fps
+        self._media_t0: Optional[float] = None  # file sources: wall time of the first frame
         self._finished = threading.Event()
         self._cap: Optional[cv2.VideoCapture] = None
         self._latest: Optional[Frame] = None
@@ -298,6 +300,12 @@ class FrameGrabber:
                 self._reopen_attempt = 0
                 self._seq += 1
                 self._frames_captured += 1
+                if self._source is not None:
+                    # Media time: the clip's own timeline, anchored at the first
+                    # read, so --no-pace runs keep real durations.
+                    if self._media_t0 is None:
+                        self._media_t0 = captured_wall_time
+                    captured_wall_time = self._media_t0 + (self._seq - 1) * self._frame_interval
                 frame = Frame(image=image, captured_at=captured_at, seq=self._seq,
                               captured_wall_time=captured_wall_time)
                 with self._published:

@@ -35,6 +35,8 @@ class DetectionConfig(BaseModel):
     yolo_target_classes: list[str] = Field(default_factory=lambda: ["bird"])
     yolo_confidence_threshold: float = 0.35
     dedupe_within_seconds: int = 10
+    visit_iou_threshold: float = 0.3
+    visit_center_distance: float = 2.0
 
 
 class LoggingConfig(BaseModel):

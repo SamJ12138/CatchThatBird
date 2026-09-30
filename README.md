@@ -70,7 +70,7 @@ python main.py --source data/samples/synth_bird.mp4 --headless --no-pace --yes
 What you will see: a few seconds of log lines, then the prompt. The exit code is 0. Abridged:
 
 ```
-INFO    | Run bc55c873: structured log -> ...\logs\run_bc55c873.jsonl
+INFO    | Run 1e87a4d2: structured log -> ...\logs\run_1e87a4d2.jsonl
 WARNING | YOLO device=cpu -- torch was not built with CUDA. It will still work; ...
 INFO    | Loading YOLO model 'yolov8n.pt' (auto-downloads on first run)
 Downloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt to 'yolov8n.pt': 100% 6.2MB
@@ -79,18 +79,20 @@ WARNING | No roi.json yet: using the example ROI in roi.example.json, which was 
 WARNING | Saved ROI was for 1920x1080, current frame is 1280x720 (same aspect ratio): rescaled to x=473 y=284 w=417 h=314
 INFO    | MOG2 warmup complete (60 frames). Detection pipeline active.
 INFO    | BIRD detected (conf=0.92, bbox=583,457,103,67)
+INFO    | BIRD detected (conf=0.91, bbox=583,457,103,68)
+...       (14 "BIRD detected" lines, one per second while the bird perches)
 INFO    | End of video file after 600 frames
 INFO    | FrameGrabber stopped (captured=600, failures=0)
-INFO    | Bird visit logged: 2026-09-30T14:57:03.251-04:00 seq=121 frames=1 conf=0.9216
+INFO    | Bird visit logged: 2026-09-30T15:21:08.045-04:00 seq=121 frames=14 conf=0.9216
 ```
 
 `data/events.jsonl` now holds one visit. This is the line from that run: the real YOLOv8n on CPU, the synthetic clip with the real photo:
 
 ```
-{"ts": "2026-09-30T14:57:03.251-04:00", "run_id": "bc55c873", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20260930T145703.251_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20260930T145703.251_seq000121_d0_full.jpg", "last_seen": "2026-09-30T14:57:03.251-04:00", "visit_frames": 1}
+{"ts": "2026-09-30T15:21:08.045-04:00", "run_id": "1e87a4d2", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20260930T152108.045_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20260930T152108.045_seq000121_d0_full.jpg", "last_seen": "2026-09-30T15:21:21.045-04:00", "visit_frames": 14}
 ```
 
-The crop snapshot it points to (`data/snapshots/..._crop.jpg`) is the padded motion crop that YOLO classified:
+The crop snapshot it points to (`data/snapshots/..._crop.jpg`) is the padded motion crop that YOLO classified when the visit opened:
 
 ![Crop snapshot from the quickstart run: the composited house sparrow on the synthetic grey background](docs/quickstart_crop.jpg)
 
@@ -98,9 +100,9 @@ The crop snapshot it points to (`data/snapshots/..._crop.jpg`) is the padded mot
 
 - **First-run output.** The first run downloads the YOLOv8n weights (6.2 MB) to `yolov8n.pt` in the repository root. Ultralytics may also print a one-time notice about its settings file.
 - **Expected warnings.** The CPU warning is expected with the CPU build. The two ROI warnings come from the example region of interest, which was drawn on a 1920x1080 camera and is rescaled here.
-- **Numbers vary.** Your run id, timestamps and confidence will differ.
-- **`ts` is a processing time here.** It is the wall-clock time at which each frame was read, so with `--no-pace` the 20 s clip spans about 4 s of wall-clock time, not the clip's own timeline.
-- **The stay is understated.** The bird stays about 13 s, yet the visit has `visit_frames: 1` and `last_seen` equal to `ts`. Once the bird sits still, the MOG2 background model learns it within about a second, so the motion gate stops sending it to YOLO. See the known limitations at the end.
+- **Numbers vary.** Your run id, timestamps and confidences will differ.
+- **One visit covers the whole perch.** The bird lands just before 4 s into the clip and leaves at about 17 s. It was confirmed on 14 gated frames (`visit_frames`), and `last_seen` is 13 s after `ts`. The bird sits still, so the motion detector stops seeing it after landing. The visit stays open because YOLO re-checks the visit's last box once a second (see How it works).
+- **Timestamps follow the clip.** For a video file, `ts` and `last_seen` are the time the run started reading plus the position in the clip. `--no-pace` therefore keeps the clip's timing, although the run takes only a few seconds.
 
 **6. Read the run log**
 
@@ -111,8 +113,8 @@ python scripts/failure_report.py --latest
 What you will see: a summary of the run you just made (abridged):
 
 ```
-Runs: 1  Lines: 71  Unparseable lines: 0
-  bc55c873: 2026-09-30T18:57:00.645+00:00 .. 2026-09-30T18:57:04.939+00:00  run success, exit_code=0, 4.3s
+Runs: 1  Lines: 174  Unparseable lines: 0
+  1e87a4d2: 2026-09-30T19:21:01.781+00:00 .. 2026-09-30T19:21:07.632+00:00  run success, exit_code=0, 5.9s
 
 == Errors: stage x error_type (fail/skip lines carrying an error_type) ==
 stage     input_invalid  external_api  parse  timeout  hardware  unknown  total
@@ -121,24 +123,28 @@ roi_load              1             .      .        .         .        .      1
 == Skips: stage x reason ==
 gate_check               cadence    522
 gate_check                warmup     60
-morph_contour        no_contours     15
-morph_contour     area_below_min      2
+morph_contour        no_contours     17
+detection_map         yolo_empty      2
+persist                   dedupe     13
 render                  headless    600
 
 == Stages: totals and duration_ms ==
 stage             success  fail  skip   p50_ms   p95_ms
-detector_init           1     0     0  2236.96  2236.96
-morph_contour           1     0    17     0.29     0.66
-yolo_infer              1     0     0   102.56   102.56
-mog2_apply *          600     0     0    ~1.23    ~3.21
-persist                 1     0     0     0.56     0.56
+detector_init           1     0     0  2233.58  2233.58
+morph_contour           1     0    17     0.47     0.74
+yolo_infer             16     0     0    59.50    76.92
+persist                 1     0    13     1.04     1.04
+mog2_apply *          600     0     0    ~2.09    ~3.44
 ```
 
 How to read it:
 - The one `roi_load` / `input_invalid` line is the example ROI's resolution not matching the clip. The ROI was rescaled, as the warning said.
-- After the 60-frame warm-up, the motion gate ran on 18 frames.
-- Only one of those frames had enough motion, the one just after the bird landed. The other 17 had none (`no_contours`: bird not there yet, or gone) or too little (`area_below_min`: the still bird had faded into the background).
-- YOLO ran once. That took 103 ms because it was the model's cold first call, and it found the bird.
+- After the 60-frame warm-up, the motion gate ran on 18 frames (522 frames were skipped for cadence).
+- Only the landing frame had motion. On the other 17 there was none (`no_contours`).
+- YOLO still ran 16 times:
+  - once on the motion crop at the landing;
+  - once a second on the open visit's last box, confirming the bird 13 more times (`persist` / `dedupe`: merged into the visit);
+  - twice more after the bird had flown off (`yolo_empty`).
 - `persist` is the visit being written when the run ended.
 - `docs/architecture.md` explains these costs.
 
@@ -207,9 +213,11 @@ The design, the threading model and the measured costs are in [docs/architecture
         |  yes
         v
  padded crop around the motion -> YOLOv8n, target classes only
+   + for each open visit: padded crop around its last box -> YOLOv8n
+     (every gated frame, motion or not, so a bird that sits still stays confirmed)
         |
         v
- EventLogger: same bird as an open visit (IoU >= 0.5, within 10 s)?
+ EventLogger: same bird as an open visit (IoU >= 0.3, or centre within 2x its size; within 10 s)?
         |       yes -> extend the visit      no -> open a visit, save snapshots
         v
  data/events.jsonl: one line per visit, written when the visit closes
@@ -233,7 +241,9 @@ All settings are in `config.yaml`. Unknown keys and wrong types stop the program
 | `detection.yolo_model` | `yolov8n.pt` | Ultralytics weights; downloaded on first use if missing |
 | `detection.yolo_target_classes` | `[bird]` | COCO class names to keep |
 | `detection.yolo_confidence_threshold` | `0.35` | Minimum YOLO confidence |
-| `detection.dedupe_within_seconds` | `10` | A visit closes after this long without a matching detection |
+| `detection.dedupe_within_seconds` | `10` | A visit closes after this long without the bird being confirmed |
+| `detection.visit_iou_threshold` | `0.3` | A detection joins an open visit if its box overlaps the visit's last box by at least this IoU ... |
+| `detection.visit_center_distance` | `2.0` | ... or if its centre is within this many times max(width, height) of the last box's centre |
 | `logging.events_file` | `data/events.jsonl` | Where visits are appended |
 | `logging.snapshots_dir` | `data/snapshots` | Where snapshots are written |
 | `logging.snapshot_format` | `jpeg` | `jpeg` or `png` |
@@ -342,10 +352,9 @@ Known limitations:
 - **Only the single largest motion contour** in the ROI goes to YOLO on each gated frame. Two birds far apart can yield one detection.
 - **CPU-only by default.** A CUDA build of PyTorch speeds up only the YOLO step (see `requirements.txt`).
 - **A hard kill loses the visit in progress.**
-- **A bird that holds still fades from view.** MOG2 learns a motionless bird into the background within about a second. After that, the motion gate stops sending it to YOLO, so `last_seen` and `visit_frames` understate a long perch. The quickstart clip shows this.
-- **Visits are matched against the visit's latest box** (IoU of at least 0.5; gated frames are about 1 s apart). Two things start a new visit for the same bird:
-  - moving more than about half its body length between gated frames
-  - a motion crop that cuts the bird off, which gives a truncated box
+- **Two birds close together can merge.** A detection joins an open visit if its centre is within 2x the visit's box size. That keeps a hopping bird in one visit, but two birds perched side by side count as one.
+- **Open visits cost YOLO time.** While a visit is open, each gated frame runs YOLO once per open visit, plus once for motion elsewhere. That continues for up to `dedupe_within_seconds` after the bird has left.
+- **Anything YOLO keeps calling a bird never closes its visit.** A still object that YOLO scores at or above the threshold (a decoy, say) keeps its visit open, and the visit is only written when the run ends.
 
 ## License
 

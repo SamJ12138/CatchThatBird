@@ -1,12 +1,12 @@
 # events.jsonl schema
 
-`logger.EventLogger` appends one JSON object per line to `logging.events_file` (default `data/events.jsonl`). Each line is one **visit**: a bird that stays in place (same class, IoU ≥ 0.5 with its latest box) is one line, however many detections it produces.
+`logger.EventLogger` appends one JSON object per line to `logging.events_file` (default `data/events.jsonl`). Each line is one **visit**: one line for a bird that stays, hops or is seen only partly, however many detections it produces. A detection joins an open visit of the same class if its box has IoU ≥ `detection.visit_iou_threshold` (0.3) with the visit's latest box, or if its centre is within `detection.visit_center_distance` (2.0) × max(w, h) of that box's centre.
 
 ## Fields
 
 | Field | Type | Meaning |
 |---|---|---|
-| `ts` | string | When the visit started. This is the capture time of the first detection's frame, as local ISO 8601 with milliseconds and offset: `2026-09-30T14:05:06.789+02:00` |
+| `ts` | string | When the visit started. This is the capture time of the first detection's frame, as local ISO 8601 with milliseconds and offset: `2026-09-30T14:05:06.789+02:00`. For a video file (`--source`) it is media time: when the run started reading, plus the frame's position in the clip |
 | `run_id` | string | 8 hex characters. The same id names the structured run log `logs/run_<run_id>.jsonl` |
 | `frame_seq` | int | Capture sequence number of that first frame (starts at 1 each run) |
 | `class` | string | Detected class name, from `detection.yolo_target_classes` (default `bird`) |
@@ -27,7 +27,7 @@ Paths are stored relative to the snapshots directory's parent. With the default 
 
 ## When a visit is written
 
-A visit closes when no matching detection has been seen for `detection.dedupe_within_seconds` (10 s by default, checked on every frame), or when the run ends. At the end of a run, `EventLogger.close()` writes every visit still open. That happens on:
+A visit closes when no matching detection has been seen for `detection.dedupe_within_seconds` (10 s by default, checked on every frame), or when the run ends. While it is open, YOLO re-checks its last box on every gated frame even if nothing moves, so a bird that sits still keeps confirming it (`last_seen` and `visit_frames` grow). At the end of a run, `EventLogger.close()` writes every visit still open. That happens on:
 
 - a normal exit (end of a `--source` file, `q` / `Esc` in the preview)
 - an error that ends the run (exit code 1)

@@ -3,6 +3,7 @@ main.py in a subprocess so the test process itself never imports ultralytics."""
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import subprocess
 import sys
 
@@ -45,8 +46,9 @@ def iou(a, b) -> float:
 
 @pytest.mark.slow
 def test_real_yolo_detects_the_synthetic_bird(tmp_path) -> None:
-    """The quickstart clip (default bird, 1280x720, example ROI) gives >= 1
-    visit, labelled bird, whose box is where the script drew the bird."""
+    """The quickstart clip (default bird, 1280x720, example ROI): the bird
+    lands, perches ~13 s and leaves. Exactly one visit, labelled bird, where
+    the script drew it, tracked through the perch (P9)."""
     if not (ROOT / "yolov8n.pt").exists():
         pytest.skip("yolov8n.pt not present (ultralytics would download it)")
     example = ROOT / "data" / "roi.example.json"
@@ -61,7 +63,11 @@ def test_real_yolo_detects_the_synthetic_bird(tmp_path) -> None:
     assert proc.returncode == 0, proc.stderr[-2000:]
 
     events = read_log(tmp_path / "data" / "events.jsonl")
-    assert len(events) >= 1
+    assert len(events) == 1, json.dumps(events)
+    (ev,) = events
+    assert ev["visit_frames"] >= 10
+    stay = datetime.fromisoformat(ev["last_seen"]) - datetime.fromisoformat(ev["ts"])
+    assert stay.total_seconds() >= 10
     sprite_wh = synth.sprite_size(roi)
     for ev in events:
         assert ev["class"] == "bird" and ev["confidence"] >= 0.35

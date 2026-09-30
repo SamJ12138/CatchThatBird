@@ -13,7 +13,9 @@ detection:
   yolo_model: yolov8n.pt
   yolo_target_classes: [bird]       # COCO class names
   yolo_confidence_threshold: 0.35   # tolerate distant small birds
-  dedupe_within_seconds: 10         # collapse a perching bird into one event
+  dedupe_within_seconds: 10         # a visit closes after this long without the bird confirmed
+  visit_iou_threshold: 0.3          # a detection joins an open visit if IoU >= this ...
+  visit_center_distance: 2.0        # ... or its centre is within this x max(w, h) of the last box
 
 logging:
   events_file: data/events.jsonl

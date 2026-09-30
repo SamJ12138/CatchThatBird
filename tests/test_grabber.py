@@ -61,3 +61,25 @@ def test_paced_source_runs_at_file_rate(synth_video_2s, obs) -> None:
     # 60 frames at 30 fps, in fake time: one frame interval after each frame.
     assert clock.monotonic() - t0 == pytest.approx(2.0, abs=1 / 30)
     assert all(s <= 1 / 30 + 1e-9 for s in clock.slept)
+
+
+def test_file_frames_carry_media_time(synth_video_2s, obs) -> None:
+    """File sources: captured_wall_time = time at the first read + (seq - 1) / fps,
+    so --no-pace runs keep the clip's own timeline (visit durations, the
+    dedupe window). Cameras keep the wall clock."""
+    grabber = FrameGrabber(0, 640, 360, 30, obs=obs, source=str(synth_video_2s), pace=False)
+    times: dict[int, float] = {}
+    with grabber:
+        last = 0
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            frame = grabber.read_latest()
+            if frame is not None and frame.seq != last:
+                times[frame.seq] = frame.captured_wall_time
+                last = frame.seq
+                grabber.ack(frame.seq)
+            elif grabber.finished and grabber.read_latest().seq == last:
+                break
+    assert len(times) == 60
+    for seq, t in times.items():
+        assert t - times[1] == pytest.approx((seq - 1) / 30, abs=1e-6)
