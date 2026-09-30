@@ -59,7 +59,7 @@ F6. **YOLO never labelled the synthetic blob a bird** (`detection_map` skip `yol
 
 ## Pre-publication findings (phase 3)
 
-Found while preparing the repository for publication. Numbered P1–P7 so they cannot be confused with `#N` or `FN` above.
+Found while preparing the repository for publication. Numbered P1–P8 so they cannot be confused with `#N` or `FN` above.
 
 | # | Where | What happened | Status |
 |---|---|---|---|
@@ -70,6 +70,7 @@ Found while preparing the repository for publication. Numbered P1–P7 so they c
 | P5 | `scripts/failure_report.py` | No tests | fixed in phase 3 batch A: golden-table test on a 20-line fixture |
 | P6 | git history, `PROJECT_REPORT.md` | The author's university email on every commit; absolute home-directory paths in one commit message (a pasted RED) and in `PROJECT_REPORT.md` | fixed in phase 3 batch B: history rewritten with git filter-repo before the first push; `PROJECT_REPORT.md` replaced by `docs/architecture.md`; `tests/test_repo_hygiene.py` fails on any such string in a tracked file |
 | P7 | `data/roi.json` | The author's own ROI was tracked, so a clone would silently watch the author's car position | fixed in phase 3 batch B: tracked as `data/roi.example.json`, `data/roi.json` gitignored; headless runs without `roi.json` use the example with a warning |
+| P8 | repository root | No README: a stranger had no entry point, no quickstart and no config reference | fixed in phase 3 batch C: README.md. The quickstart was replayed verbatim in a fresh clone with an empty pip cache: exit 0 at every step, 95 s end to end (75 s of it `pip install`). `tests/test_readme.py` keeps its config table, event fields and CLI flags in step with the code |
 
 ## Implementation notes (deviations from the brief)
 

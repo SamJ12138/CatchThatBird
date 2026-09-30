@@ -2,8 +2,8 @@
 
 # PyTorch, pinned. CPU build by default: YOLOv8n runs about once a second on
 # a small motion crop, which a laptop CPU handles.
-# The extra index below serves the CPU-only wheels (about 200 MB, against
-# several GB for PyPI's default CUDA build on Linux). pip picks
+# The extra index below serves the CPU-only wheels (125 MB for Windows,
+# against several GB of CUDA libraries with PyPI's default build on Linux). pip picks
 # "2.12.0+cpu" from it, since a local version label sorts above the plain
 # "2.12.0". Where the index has no CPU wheel (macOS), PyPI's is used.
 #
