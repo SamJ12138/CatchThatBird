@@ -31,7 +31,7 @@ The work is split across two threads. The grabber thread runs `capture_read` con
 
 | # | Stage | Owner | Input | Output | Failure modes seen in the code |
 |---|---|---|---|---|---|
-| 9 ⏱ | `capture_read` | `FrameGrabber._run` (camera.py:202), grabber thread | open capture | `Frame(image, captured_at, seq)` written into the single latest-frame slot | `cap.read()` returns False → count, sleep 50 ms, **retry forever**, never reopens (`hardware`, one line per failure). Exception in the loop → thread dies and sets `grabber.error`; the main loop exits 1. File source: first failed read = end of file → `finished` set, thread exits (skip `end_of_file`) |
+| 9 ⏱ | `capture_read` | `FrameGrabber._run` (camera.py:202), grabber thread | open capture | `Frame(image, captured_at, seq)` written into the single latest-frame slot | `cap.read()` returns False → count, sleep 50 ms and retry (`hardware`, one line per failure); after `reconnect_after_s` (2 s) of consecutive failures → `capture_reconnect`. Exception in the loop → thread dies and sets `grabber.error`; the main loop exits 1. File source: first failed read = end of file → `finished` set, thread exits (skip `end_of_file`) |
 | – | *(frame pickup)* | `run_preview` loop head (main.py:347–373) | latest-frame slot | new `Frame`, or nothing | Not a logged stage: this is the seq-dedupe spin that waits for a newer frame. Producer frames that are overwritten before pickup are counted in `skipped_total` (the `render` summary) |
 | 10 ⏱ | `mog2_apply` | `Detector.process` (detector.py:145–157) | frame image (ROI slice or full) | foreground mask | `cv2.error` on a bad/empty ROI slice would propagate (`unknown`). Runs on **every picked-up frame**, not every captured one |
 | 11 ⏱ | `gate_check` | `Detector.process` (detector.py:159–182) | frame counter | continue / `[]` | Not an error path. `frame_count <= motion_warmup_frames` → skip `warmup` (frames 1–60 by default; was 1–59 before phase 2). `frame_count % N != 0` → skip `cadence`. The count is of picked-up frames, not camera frames |
@@ -46,7 +46,8 @@ The work is split across two threads. The grabber thread runs `capture_read` con
 
 | # | Stage | Owner | Input | Output | Failure modes seen in the code |
 |---|---|---|---|---|---|
-| 17 | `capture_close` | `FrameGrabber.stop` (camera.py:267) | grabber | released capture | Thread still alive after the 2 s join → capture released anyway (`timeout`) |
+| 9a | `capture_reconnect` | `FrameGrabber._release_for_reconnect` / `_reconnect` (camera only) | stalled capture | reopened capture | Releases the capture, then waits `backoff_delay(k)` = 1, 2, 4, 8, 16, 30, 30 … s before each `capture_open` attempt; restarts at 1 s after the next good frame. `skip` `stopped` if `stop()` is called while waiting. Files never reconnect: their first failed read is end of file |
+| 17 | `capture_close` | `FrameGrabber.stop` | grabber | released capture | Thread still alive after the join (`join_timeout_s`, 2 s) → warning, `fail` (`timeout`), and the capture is **not** released (a release during `read()` can crash the driver) |
 
 ## D. Persistence (Phase 3, `logger.py`)
 

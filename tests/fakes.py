@@ -10,12 +10,43 @@ import numpy as np
 BIRD = 14  # COCO class id for "bird"
 
 
+class FakeDevice:
+    """A physical camera shared by every FakeCapture opened on it, so a
+    reconnect sees the device come back. Use as the cv2.VideoCapture factory.
+
+    fail_reads: the next N read() calls (on any capture) return False
+    fail_opens: the next N open attempts fail on every backend
+    """
+
+    def __init__(self, *, fail_reads: int = 0, fail_opens: int = 0,
+                 block_reads: bool = False) -> None:
+        self.fail_reads = fail_reads
+        self.fail_opens = fail_opens
+        self.block_reads = block_reads
+        self.open_attempts: list[float] = []  # monotonic time of each attempt
+        self.captures: list["FakeCapture"] = []
+        self._attempt_fails = False
+
+    def __call__(self, index: Any = 0, backend: Optional[int] = None) -> "FakeCapture":
+        if backend in (None, cv2.CAP_DSHOW):  # first backend tried = a new attempt
+            self.open_attempts.append(time.monotonic())
+            self._attempt_fails = self.fail_opens > 0
+            if self._attempt_fails:
+                self.fail_opens -= 1
+        cap = FakeCapture(device=self, block=self.block_reads)
+        if self._attempt_fails:
+            cap.released = True  # isOpened() -> False
+        self.captures.append(cap)
+        return cap
+
+
 class FakeCapture:
     """cv2.VideoCapture stand-in (camera or file).
 
     frames: successful reads before read() returns False (None = endless)
     raise_after: read number raise_after + 1 raises RuntimeError
     block: read() never returns (a hung driver)
+    device: a FakeDevice whose fail_reads budget this capture consumes
     A dark block moves across a grey frame so MOG2 sees motion.
     """
 
@@ -28,6 +59,7 @@ class FakeCapture:
         width: int = 320,
         height: int = 240,
         fps: float = 30.0,
+        device: Optional[FakeDevice] = None,
     ) -> None:
         self.frames = frames
         self.raise_after = raise_after
@@ -35,6 +67,7 @@ class FakeCapture:
         self.width = width
         self.height = height
         self.fps = fps
+        self.device = device
         self.reads = 0
         self.released = False
 
@@ -56,6 +89,9 @@ class FakeCapture:
         if self.block:
             time.sleep(3600)
         self.reads += 1
+        if self.device is not None and self.device.fail_reads > 0:
+            self.device.fail_reads -= 1
+            return False, None
         if self.raise_after is not None and self.reads > self.raise_after:
             raise RuntimeError(f"fake capture exploded on read {self.reads}")
         if self.frames is not None and self.reads > self.frames:

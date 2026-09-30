@@ -69,6 +69,14 @@ def find_pocket_index(devices: list[tuple[int, str]]) -> Optional[int]:
     return None
 
 
+BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)  # camera reopen delays; the last one repeats
+
+
+def backoff_delay(attempt: int, schedule: tuple[float, ...] = BACKOFF_S) -> float:
+    """Delay before reopen attempt `attempt` (0-based): 1, 2, 4 ... capped at 30 s."""
+    return schedule[min(attempt, len(schedule) - 1)]
+
+
 @dataclass(frozen=True)
 class Frame:
     image: np.ndarray
@@ -86,7 +94,14 @@ class FrameGrabber:
     file is read at its own frame rate (like a camera would deliver it), and
     `finished` becomes True once the file runs out. With `pace=False` a file
     is read as fast as the consumer takes frames: the producer waits for
-    `ack(seq)` before reading the next one, so no frame is skipped."""
+    `ack(seq)` before reading the next one, so no frame is skipped.
+
+    Camera only: after `reconnect_after_s` of consecutive failed reads the
+    capture is released and reopened, waiting backoff_delay(k) before attempt
+    k; the schedule restarts after the next good frame."""
+
+    RECONNECT_AFTER_S = 2.0
+    JOIN_TIMEOUT_S = 2.0
 
     def __init__(
         self,
@@ -98,6 +113,9 @@ class FrameGrabber:
         obs: ObsLogger,
         source: Optional[str] = None,
         pace: bool = True,
+        reconnect_after_s: float = RECONNECT_AFTER_S,
+        backoff_s: tuple[float, ...] = BACKOFF_S,
+        join_timeout_s: float = JOIN_TIMEOUT_S,
     ) -> None:
         self._device_index = device_index
         self._width = width
@@ -106,6 +124,10 @@ class FrameGrabber:
         self._obs = obs
         self._source = source
         self._pace = pace
+        self._reconnect_after_s = reconnect_after_s
+        self._backoff_s = backoff_s
+        self._join_timeout_s = join_timeout_s
+        self._reopen_attempt = 0  # index into the backoff schedule
         self._frame_interval = 1.0 / fps
         self._finished = threading.Event()
         self._cap: Optional[cv2.VideoCapture] = None
@@ -210,8 +232,11 @@ class FrameGrabber:
     def _run(self) -> None:
         assert self._cap is not None
         next_due = time.monotonic()
+        stalled_since: Optional[float] = None
         try:
             while not self._stop_event.is_set():
+                if self._cap is None and not self._reconnect():
+                    return  # stopped while waiting to reopen
                 t0 = time.perf_counter()
                 ok, image = self._cap.read()
                 captured_at = time.monotonic()
@@ -241,8 +266,20 @@ class FrameGrabber:
                         logger.warning(
                             f"cap.read() failed (total={self._read_failures})"
                         )
+                    if stalled_since is None:
+                        stalled_since = captured_at
+                    elif captured_at - stalled_since >= self._reconnect_after_s:
+                        logger.warning(
+                            f"Camera stalled for {captured_at - stalled_since:.1f}s; "
+                            "closing it to reconnect"
+                        )
+                        self._release_for_reconnect(captured_at - stalled_since)
+                        stalled_since = None
+                        continue
                     time.sleep(0.05)
                     continue
+                stalled_since = None
+                self._reopen_attempt = 0
                 self._seq += 1
                 self._frames_captured += 1
                 frame = Frame(image=image, captured_at=captured_at, seq=self._seq,
@@ -272,6 +309,37 @@ class FrameGrabber:
             )
             raise
 
+    def _release_for_reconnect(self, stalled_s: float) -> None:
+        assert self._cap is not None
+        self._cap.release()
+        self._cap = None
+        self._reconnect_span = self._obs.span(
+            "capture_reconnect", error_type="hardware",
+            context={"stalled_s": round(stalled_s, 3), "failures_total": self._read_failures},
+        )
+
+    def _reconnect(self) -> bool:
+        """Reopen the camera, waiting backoff_delay(k) before each attempt.
+        Returns False if stop() was called while waiting."""
+        sp = self._reconnect_span
+        attempts = 0
+        while True:
+            delay = backoff_delay(self._reopen_attempt, self._backoff_s)
+            self._reopen_attempt += 1
+            logger.info(f"Reopening camera in {delay:g}s (attempt {self._reopen_attempt})")
+            if self._stop_event.wait(delay):
+                sp.skip("stopped", context={"attempts": attempts})
+                return False
+            attempts += 1
+            try:
+                self._cap = self._open_capture()
+            except RuntimeError as e:
+                logger.warning(f"Reconnect attempt {attempts} failed: {e}")
+                continue
+            logger.info(f"Camera reconnected after {attempts} attempt(s)")
+            sp.success({"attempts": attempts})
+            return True
+
     @property
     def finished(self) -> bool:
         """True once a file source has been read to the end."""
@@ -297,16 +365,24 @@ class FrameGrabber:
     def stop(self) -> None:
         sp = self._obs.span("capture_close")
         self._stop_event.set()
+        reader_stuck = False
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=self._join_timeout_s)
             if self._thread.is_alive():
+                # Releasing a capture that another thread is still reading
+                # from can crash inside the driver: leave it to process exit.
+                reader_stuck = True
+                logger.warning(
+                    f"Capture thread still inside read() after {self._join_timeout_s:g}s; "
+                    "leaving the device handle open until the process exits"
+                )
                 self._obs.emit(
                     "capture_close", "fail", error_type="timeout",
-                    error_message="FrameGrabber thread still alive after 2s join; "
-                                  "releasing capture anyway",
+                    error_message=f"FrameGrabber thread still alive after "
+                                  f"{self._join_timeout_s:g}s join; capture not released",
                 )
             self._thread = None
-        if self._cap is not None:
+        if self._cap is not None and not reader_stuck:
             self._cap.release()
             self._cap = None
         logger.info(
