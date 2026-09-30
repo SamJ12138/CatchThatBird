@@ -112,6 +112,7 @@ class FrameGrabber:
         self._lock = threading.Lock()
         self._acked = threading.Condition(threading.Lock())
         self._acked_seq = 0
+        self._error: Optional[BaseException] = None
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._seq = 0
@@ -259,7 +260,9 @@ class FrameGrabber:
                                and not self._stop_event.is_set()):
                             self._acked.wait(0.05)
         except Exception as e:
-            # Not handled here before either: the thread still dies.
+            # The thread still dies; `error` lets the consumer notice instead
+            # of waiting forever for a frame that will never come.
+            self._error = e
             self._obs.emit(
                 "capture_read", "fail", frame_seq=self._seq, error_type="unknown",
                 error_message=describe(e), context={"thread_died": True},
@@ -270,6 +273,11 @@ class FrameGrabber:
     def finished(self) -> bool:
         """True once a file source has been read to the end."""
         return self._finished.is_set()
+
+    @property
+    def error(self) -> Optional[BaseException]:
+        """The exception that killed the capture thread, if it died."""
+        return self._error
 
     def ack(self, seq: int) -> None:
         """Consumer is done with frame `seq`. Only an unpaced file source waits

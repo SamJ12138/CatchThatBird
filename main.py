@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Optional
 
 import cv2
 import numpy as np
+import yaml
 from loguru import logger
+from pydantic import ValidationError
 
 from camera import (
     Frame,
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
     from detector import Predictor
 
 
+CONFIG_FILE = Path(__file__).resolve().parent / "config.yaml"
 ROI_FILE = Path(__file__).resolve().parent / "data" / "roi.json"
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 ASPECT_TOLERANCE = 0.01  # relative; 1920x1080 vs 1280x720 match, 640x480 does not
@@ -34,9 +37,10 @@ class ExitError(Exception):
     """A startup/run condition that ends the process with `code` and a
     one-line message (no traceback)."""
 
-    def __init__(self, message: str, code: int = 1) -> None:
+    def __init__(self, message: str, code: int = 1, error_type: str = "input_invalid") -> None:
         super().__init__(message)
         self.code = code
+        self.error_type = error_type
 ROI_SELECT_WINDOW = "Select ROI -- drag a rectangle around the car. Enter/Space = confirm, C = whole frame"
 
 
@@ -92,12 +96,14 @@ def wait_for_enter(obs: ObsLogger) -> None:
     sys.stdout.flush()
     try:
         input()
-    except (EOFError, KeyboardInterrupt) as e:
+    except EOFError:
+        message = ("stdin closed before the pre-flight checklist was confirmed; "
+                   "pass --yes to skip the checklist in unattended runs")
+        sp.fail("input_invalid", message)
+        raise ExitError(message, code=2)
+    except KeyboardInterrupt:
         logger.info("Aborted before camera start")
-        if isinstance(e, EOFError):
-            sp.fail("input_invalid", "stdin closed before Enter; exiting with code 0")
-        else:
-            sp.skip("keyboard_interrupt")
+        sp.skip("keyboard_interrupt")
         sys.exit(0)
     sp.success()
 
@@ -197,13 +203,29 @@ def _put_text(img, text: str, org: tuple[int, int], color: tuple[int, int, int])
 def _wait_for_first_frame(
     grabber: FrameGrabber, timeout: float = 5.0
 ) -> Optional[Frame]:
+    """None if nothing arrives within `timeout`, or as soon as the source ends
+    or the capture thread dies without producing a frame."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         frame = grabber.read_latest()
         if frame is not None:
             return frame
+        if grabber.finished or grabber.error is not None:
+            return grabber.read_latest()
         time.sleep(0.02)
     return None
+
+
+def save_snapshot(path: Path, image: np.ndarray, obs: ObsLogger, *, frame_seq: int) -> bool:
+    """Write `image` to `path`; returns False (and says so) if OpenCV could not."""
+    sp = obs.span("snapshot_save", frame_seq=frame_seq, context={"path": str(path)})
+    if cv2.imwrite(str(path), image):
+        sp.success()
+        logger.info(f"Saved {path}")
+        return True
+    sp.fail("unknown", "cv2.imwrite returned False")
+    logger.error(f"Failed to write snapshot {path} (cv2.imwrite returned False)")
+    return False
 
 
 def load_or_select_roi(
@@ -356,6 +378,7 @@ def run_preview(
     pace: bool = True,
     roi_file: Path = ROI_FILE,
     predictor: Optional[Predictor] = None,
+    first_frame_timeout: float = 5.0,
 ) -> None:
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
     from detector import Detection, Detector
@@ -372,12 +395,17 @@ def run_preview(
         source=source,
         pace=pace,
     ) as grabber:
-        sp = obs.span("first_frame_wait", context={"timeout_s": 5.0})
-        first_frame = _wait_for_first_frame(grabber, timeout=5.0)
+        sp = obs.span("first_frame_wait", context={"timeout_s": first_frame_timeout})
+        first_frame = _wait_for_first_frame(grabber, timeout=first_frame_timeout)
         if first_frame is None:
-            logger.error("No frames received within 5s -- aborting before ROI selection")
-            sp.fail("timeout", "no frames within 5s; run_preview returns normally (exit 0)")
-            return
+            if grabber.error is not None:
+                reason = f"capture thread died before the first frame: {describe(grabber.error)}"
+            elif grabber.finished:
+                reason = f"source {source} ended before producing any frame"
+            else:
+                reason = f"no frames received within {first_frame_timeout:g}s"
+            sp.fail("timeout", reason)
+            raise ExitError(f"No frames: {reason}", error_type="timeout")
         sp.success({"frame_seq": first_frame.seq})
 
         roi = load_or_select_roi(
@@ -408,14 +436,7 @@ def run_preview(
 
         while True:
             frame = grabber.read_latest()
-            if frame is None:
-                # Producer hiccup mid-run; service window and try again
-                if headless:
-                    time.sleep(0.01)
-                    continue
-                if cv2.waitKey(10) & 0xFF in (ord("q"), 27):
-                    return
-                continue
+            assert frame is not None  # the first frame arrived before the loop
 
             is_new = frame.seq != last_seq
             if not is_new:
@@ -423,6 +444,9 @@ def run_preview(
                 if grabber.finished and grabber.read_latest().seq == last_seq:
                     logger.info("Video source finished")
                     return
+                if grabber.error is not None:
+                    raise ExitError(f"Capture thread died: {describe(grabber.error)}",
+                                    error_type="unknown")
                 if headless:
                     time.sleep(0.005)
                     continue
@@ -533,15 +557,8 @@ def run_preview(
                 logger.info("Quit requested via keyboard")
                 return
             if key == ord("s"):
-                snap_path = Path(f"snap_{snap_count:03d}.jpg")
-                snap_sp = obs.span("snapshot_save", frame_seq=frame.seq,
-                                   context={"path": str(snap_path.resolve())})
-                written = cv2.imwrite(str(snap_path), frame.image)
-                if written:
-                    snap_sp.success()
-                else:
-                    snap_sp.fail("unknown", "cv2.imwrite returned False")
-                logger.info(f"Saved {snap_path.resolve()}")
+                snap_path = Path(f"snap_{snap_count:03d}.jpg").resolve()
+                save_snapshot(snap_path, frame.image, obs, frame_seq=frame.seq)
                 snap_count += 1
 
 
@@ -599,6 +616,25 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         metavar="DIR",
         help="Directory for the run_<id>.jsonl structured log (default: logs/).",
     )
+    p.add_argument(
+        "--config",
+        type=Path,
+        default=CONFIG_FILE,
+        metavar="PATH",
+        help="Config file (default: config.yaml next to main.py).",
+    )
+    p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the Pocket 3 pre-flight checklist prompt (unattended runs).",
+    )
+    p.add_argument(
+        "--first-frame-timeout",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="Exit 1 if the source produces no frame within this time (default: 5).",
+    )
     return p.parse_args(argv)
 
 
@@ -611,7 +647,12 @@ def main(argv: Optional[list[str]] = None, *, predictor: Optional[Predictor] = N
     logger.info(f"Run {obs.run_id}: structured log -> {obs.path}")
     try:
         with obs.span("run", context={"argv": sys.argv[1:] if argv is None else argv}) as run:
-            code = _main(args, obs, run, predictor)
+            try:
+                code = _main(args, obs, run, predictor)
+            except ExitError as e:
+                logger.error(str(e))
+                run.fail(e.error_type, str(e), {"exit_code": e.code})
+                return e.code
             if code != 0:
                 run.fail("unknown", f"exit code {code}", {"exit_code": code})
             run.success({"exit_code": code})
@@ -620,19 +661,38 @@ def main(argv: Optional[list[str]] = None, *, predictor: Optional[Predictor] = N
         obs.close()
 
 
+def load_app_config(path: Path) -> AppConfig:
+    """load_config() with every failure turned into a one-line ExitError."""
+    if not path.exists():
+        raise ExitError(f"Missing config file {path}", error_type="input_invalid")
+    try:
+        return load_config(path)
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        problem = getattr(e, "problem", None) or str(e).splitlines()[0]
+        raise ExitError(f"Invalid YAML in config {path}{where}: {problem}",
+                        error_type="parse") from e
+    except ValidationError as e:
+        errors = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        raise ExitError(f"Invalid config {path}: {e.error_count()} error(s): {errors}",
+                        error_type="parse") from e
+
+
 def _main(
     args: argparse.Namespace,
     obs: ObsLogger,
     run: Span,
     predictor: Optional[Predictor] = None,
 ) -> int:
-    with obs.span("config_load", error_type="parse") as sp:
-        config_path = Path(__file__).resolve().parent / "config.yaml"
-        if not config_path.exists():
-            logger.error(f"Missing config at {config_path}")
-            sp.fail("input_invalid", f"missing config at {config_path}")
-            return 1
-        config = load_config(config_path)
+    with obs.span("config_load", error_type="parse", context={"path": str(args.config)}) as sp:
+        try:
+            config = load_app_config(args.config)
+        except ExitError as e:
+            sp.fail(e.error_type, str(e))
+            raise
 
     if args.device is not None:
         logger.info(
@@ -653,7 +713,8 @@ def _main(
             f"Camera config: index={config.camera.device_index} "
             f"{config.camera.width}x{config.camera.height}@{config.camera.fps}"
         )
-        wait_for_enter(obs)
+        if not args.yes:
+            wait_for_enter(obs)
     else:
         logger.info(
             f"Source: video file {args.source} "
@@ -664,11 +725,10 @@ def _main(
             config, force_select_roi=args.select_roi, obs=obs,
             source=args.source, headless=args.headless, pace=not args.no_pace,
             roi_file=args.roi_file, predictor=predictor,
+            first_frame_timeout=args.first_frame_timeout,
         )
-    except ExitError as e:
-        logger.error(str(e))
-        run.fail("input_invalid", str(e), {"exit_code": e.code})
-        return e.code
+    except ExitError:
+        raise  # one-line message + exit code, handled in main()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         run.skip("keyboard_interrupt", context={"exit_code": 0})

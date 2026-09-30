@@ -56,6 +56,21 @@ def test_headless_same_aspect_roi_is_rescaled(synth_video_2s, tmp_path, fake_pre
     assert roi_end[-1]["context"]["roi"] == [160, 90, 320, 180]
 
 
+def test_paced_loop_waits_for_new_frames_and_exits_at_eof(synth_video_2s, tmp_path,
+                                                          fake_predictor) -> None:
+    """The loop's 'no new frame yet' path (next to the deleted dead branch,
+    obs #16) still spins until frames arrive and exits 0 at end of file."""
+    log_dir = tmp_path / "logs"
+    code = main.main(["--source", str(synth_video_2s), "--headless", "--log-dir", str(log_dir),
+                      "--roi-file", str(tmp_path / "no_roi.json")], predictor=fake_predictor())
+    (log,) = log_dir.glob("run_*.jsonl")
+    lines = read_log(log)
+
+    assert code == 0
+    assert summary_total(lines, "capture_read") == 60
+    assert summary_total(lines, "mog2_apply") >= 50  # paced: the loop keeps up
+
+
 def test_blob_reaches_the_predictor(synth_video_2s, tmp_path, fake_predictor) -> None:
     fake = fake_predictor()
     code, lines = run(synth_video_2s, tmp_path, fake)

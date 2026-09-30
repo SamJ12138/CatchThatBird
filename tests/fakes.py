@@ -4,7 +4,69 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+import cv2
+import numpy as np
+
 BIRD = 14  # COCO class id for "bird"
+
+
+class FakeCapture:
+    """cv2.VideoCapture stand-in (camera or file).
+
+    frames: successful reads before read() returns False (None = endless)
+    raise_after: read number raise_after + 1 raises RuntimeError
+    block: read() never returns (a hung driver)
+    A dark block moves across a grey frame so MOG2 sees motion.
+    """
+
+    def __init__(
+        self,
+        *_args: Any,
+        frames: Optional[int] = None,
+        raise_after: Optional[int] = None,
+        block: bool = False,
+        width: int = 320,
+        height: int = 240,
+        fps: float = 30.0,
+    ) -> None:
+        self.frames = frames
+        self.raise_after = raise_after
+        self.block = block
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.reads = 0
+        self.released = False
+
+    def isOpened(self) -> bool:
+        return not self.released
+
+    def get(self, prop: int) -> float:
+        return {
+            cv2.CAP_PROP_FPS: self.fps,
+            cv2.CAP_PROP_FRAME_WIDTH: self.width,
+            cv2.CAP_PROP_FRAME_HEIGHT: self.height,
+            cv2.CAP_PROP_FRAME_COUNT: self.frames or 0,
+        }.get(prop, 0.0)
+
+    def set(self, _prop: int, _value: float) -> bool:
+        return True
+
+    def read(self):
+        if self.block:
+            time.sleep(3600)
+        self.reads += 1
+        if self.raise_after is not None and self.reads > self.raise_after:
+            raise RuntimeError(f"fake capture exploded on read {self.reads}")
+        if self.frames is not None and self.reads > self.frames:
+            return False, None
+        img = np.full((self.height, self.width, 3), 128, dtype=np.uint8)
+        x = (self.reads * 3) % max(1, self.width - 20)
+        img[self.height // 2:self.height // 2 + 20, x:x + 20] = 40
+        return True, img
+
+    def release(self) -> None:
+        self.released = True
 
 
 class FakePredictor:
