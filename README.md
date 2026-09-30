@@ -32,7 +32,7 @@ source .venv/bin/activate
 ```
 
 The prompt now starts with `(.venv)`. From here on, `python` means the environment's Python in both shells.
-- **PowerShell refuses to run `Activate.ps1`:** run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first. This affects only the current window.
+- **PowerShell refuses to run `Activate.ps1`** ("running scripts is disabled on this system", the default on a new Windows install): run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then `.\.venv\Scripts\Activate.ps1` again. The policy change lasts only for the current window.
 - **Git Bash on Windows:** the activate command is `source .venv/Scripts/activate`.
 
 **3. Install the dependencies**
@@ -43,7 +43,7 @@ python -m pip install -r requirements.txt
 
 This installs the CPU build of PyTorch with Ultralytics, OpenCV and the smaller packages. `requirements.txt` explains how to use an NVIDIA GPU instead. Minimal Linux images may also need OpenCV's system libraries: `sudo apt-get install libgl1 libglib2.0-0`.
 
-What you will see: pip downloads and installs about 60 packages and ends with `Successfully installed ...`. On a test run from a fresh clone (Windows, Python 3.14, empty pip cache) this step took 75 s, and the PyTorch wheel was `torch-2.12.0+cpu`, 125 MB.
+What you will see: pip downloads and installs about 50 packages and ends with `Successfully installed ...`. pip may also suggest upgrading itself; that is optional. On two test runs from a fresh clone (Windows, Python 3.14, empty pip cache) this step took 75 s and 86 s, and the PyTorch wheel was `torch-2.12.0+cpu`, 125 MB.
 
 **4. Generate a test video**
 
@@ -67,7 +67,7 @@ python main.py --source data/samples/synth_blob.mp4 --headless --no-pace --yes
 
 `--source` reads a file instead of the camera. `--headless` opens no windows. `--no-pace` processes every frame as fast as possible instead of at the video's 30 fps. `--yes` skips the camera checklist.
 
-What you will see: a few seconds of log lines (6.6 s on the test run), then the prompt. The exit code is 0. Abridged:
+What you will see: a few seconds of log lines (7 to 8 s on the test runs), then the prompt. The exit code is 0. Abridged:
 
 ```
 INFO    | Run b3f58867: structured log -> ...\logs\run_b3f58867.jsonl
@@ -119,7 +119,7 @@ How to read it:
 - The one `roi_load` / `input_invalid` line is the example ROI's resolution not matching the clip. The ROI was rescaled, as the warning said.
 - After the 60-frame warm-up, the motion gate ran on 18 frames (522 frames were skipped for cadence).
 - YOLO ran 18 times and found no bird (`yolo_empty`).
-- MOG2 took about 1.2 ms per frame on the region of interest.
+- MOG2 took 1 to 2 ms per frame on the region of interest; timings vary from run to run.
 - `docs/architecture.md` explains these costs.
 
 **7. A real clip (TODO)**
