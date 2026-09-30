@@ -25,6 +25,19 @@ SLEEP_LIMIT_S = 0.1       # longest real time.sleep() a single call may make
 # nodeid -> {"setup": s, "call": s, "teardown": s}, filled as reports arrive.
 _durations: dict[str, dict[str, float]] = defaultdict(dict)
 
+# One-time environment costs paid in pytest_sessionstart, outside every
+# test's budget: matplotlib builds its font cache on first import (20 s on
+# a fresh GitHub Windows runner).
+WARMED: list[str] = []
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    try:
+        import matplotlib.font_manager  # noqa: F401
+    except ImportError:  # dev dependency; the plot tests fail on their own without it
+        return
+    WARMED.append("matplotlib.font_manager")
+
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if "slow" not in report.keywords:

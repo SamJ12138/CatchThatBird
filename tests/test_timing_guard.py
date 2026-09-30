@@ -26,3 +26,12 @@ def test_long_real_sleeps_are_recorded() -> None:
         sleep(s)
     assert violations == [0.25, 3600]
     assert requested == [0.0, 0.05, 0.1, 0.25, 3600]  # still delegated
+
+
+def test_slow_first_imports_are_warmed_before_any_test() -> None:
+    """matplotlib builds its font cache on first import: 20 s on a fresh GitHub
+    Windows runner (CI run 36758625054). pytest_sessionstart pays it once,
+    outside every test's 5 s budget."""
+    from tests import conftest
+
+    assert conftest.WARMED == ["matplotlib.font_manager"]
