@@ -1,0 +1,27 @@
+camera:
+  device_index: 0
+  width: 1920
+  height: 1080
+  fps: 30
+
+detection:
+  process_every_n_frames: 30        # 30fps grab, process 1 fps
+  motion_min_area: 200              # birds are smaller than people
+  motion_threshold: 16
+  motion_padding_px: 50             # extra context around motion ROI before YOLO crop
+  motion_warmup_frames: 60          # skip detection until MOG2 has seen this many frames (~2s)
+  yolo_model: yolov8n.pt
+  yolo_target_classes: [bird]       # COCO class names
+  yolo_confidence_threshold: 0.35   # tolerate distant small birds
+  dedupe_within_seconds: 10         # collapse a perching bird into one event
+
+logging:
+  events_file: data/events.jsonl
+  snapshots_dir: data/snapshots
+  snapshot_format: jpeg
+  snapshot_quality: 90
+  save_full_frame: true             # keep crop + full frame for context
+
+storage:
+  max_events_per_day: 500           # disk-fill guard
+  retention_days: 30

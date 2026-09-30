@@ -1,0 +1,17 @@
+# Phases 3-6 will add: streamlit, plotly, scikit-learn, scipy.
+opencv-python>=4.10
+numpy>=1.26
+pydantic>=2.6
+pyyaml>=6.0
+loguru>=0.7
+
+# Windows-only: enumerates UVC device names so we can pick the Pocket 3 by name
+# instead of guessing indexes. Enumeration order matches OpenCV's CAP_DSHOW.
+pygrabber>=0.2; sys_platform == "win32"
+
+# Phase 2: detection. NOTE on GPU acceleration --
+# Install torch with a CUDA wheel BEFORE running `pip install -r requirements.txt`:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# (Swap cu124 for cu121 or cu118 if your NVIDIA driver is older. The CPU
+# wheel works too -- YOLOv8n at 1 fps is well within CPU budget.)
+ultralytics>=8.1

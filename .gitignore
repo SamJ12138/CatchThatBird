@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Generated data
+data/events.jsonl
+data/snapshots/
+snap_*.jpg
+logs/
+
+# Model weights (downloaded at runtime by ultralytics)
+*.pt
+
+# IDE
+.vscode/
+.idea/
