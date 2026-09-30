@@ -24,7 +24,7 @@ This document covers the module graph, the threading model, the two-stage detect
          |
          +--> data/roi.json (or data/roi.example.json), logs/run_<id>.jsonl
 
-   scripts/make_synth_video.py   synthetic clip for --source runs (OpenCV only)
+   scripts/make_synth_video.py   synthetic clip for --source runs: a real bird photo, or a blob
    scripts/failure_report.py     summarises logs/run_<id>.jsonl (stdlib only)
    tests/fakes.py                FakeCapture, FakeDevice, FakePredictor, FakeClock
 ```
@@ -128,7 +128,7 @@ These are the figures behind the round numbers used elsewhere in this project: M
 - **YOLO's first call is cold:** 98–105 ms now (2.4–2.7× a warm call), 266–275 ms before (4.1–4.4×). It is paid once per run.
 - **At 1 Hz, YOLO is not the bottleneck on CPU;** per-frame MOG2 on an unrestricted frame is. A GPU speeds up only the YOLO part.
 
-To reproduce a row, regenerate the clip (`python scripts/make_synth_video.py [--width 1920 --height 1080 --out data/samples/synth_blob_1080p.mp4]`), then run `main.py --source <clip> --headless` with `--roi-file` pointing either at `data/roi.example.json` or at a file holding `{"whole_frame": true, "frame_width": W, "frame_height": H}`. Read the result with `python scripts/failure_report.py --latest`.
+To reproduce a row, regenerate the blob clip these runs used (`python scripts/make_synth_video.py --no-bird [--width 1920 --height 1080 --out data/samples/synth_blob_1080p.mp4]`; without `--no-bird` the script now makes the bird clip), then run `main.py --source <clip> --headless` with `--roi-file` pointing either at `data/roi.example.json` or at a file holding `{"whole_frame": true, "frame_width": W, "frame_height": H}`. Read the result with `python scripts/failure_report.py --latest`.
 
 ## 5. Startup order
 

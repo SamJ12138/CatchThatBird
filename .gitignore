@@ -10,7 +10,8 @@ data/events.jsonl
 data/snapshots/
 snap_*.jpg
 logs/
-data/samples/
+data/samples/*
+!data/samples/assets/
 
 # Per-machine ROI (drawn with the dialog); data/roi.example.json is tracked
 data/roi.json

@@ -118,18 +118,18 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def synth_video_2s(tmp_path: Path) -> Path:
-    return make_video(tmp_path / "synth_2s.mp4", seconds=2, width=640, height=360)
+    return make_video(tmp_path / "synth_2s.mp4", seconds=2, width=640, height=360, bird=False)
 
 
 @pytest.fixture
 def synth_video_2s_1080p(tmp_path: Path) -> Path:
-    return make_video(tmp_path / "synth_2s_1080p.mp4", seconds=2, width=1920, height=1080)
+    return make_video(tmp_path / "synth_2s_1080p.mp4", seconds=2, width=1920, height=1080, bird=False)
 
 
 @pytest.fixture(scope="session")
 def synth_video_15s(tmp_path_factory: pytest.TempPathFactory) -> Path:
     out = tmp_path_factory.mktemp("video") / "synth_15s.mp4"
-    return make_video(out, seconds=15, width=640, height=360)
+    return make_video(out, seconds=15, width=640, height=360, bird=False)
 
 
 # ---------------------------------------------------------------- fakes

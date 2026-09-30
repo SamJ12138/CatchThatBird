@@ -53,10 +53,8 @@ def test_matplotlib_is_a_dev_dependency_only() -> None:
     assert "matplotlib" not in (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
 
-def test_readme_embeds_the_plot_with_an_honest_caption() -> None:
+def test_readme_documents_the_script_without_a_fixture_image() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     output = readme.split("## Output", 1)[1].split("\n## ", 1)[0]
-    assert "![" in output and "(docs/visits.png)" in output
-    assert "tests/fixtures/events_5.jsonl" in output and "not real observations" in output
     assert "python scripts/plot_visits.py" in output
-    assert (ROOT / "docs" / "visits.png").is_file()
+    assert "![" not in output                      # no chart made from test data on the front page

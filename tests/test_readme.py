@@ -26,7 +26,7 @@ QUICKSTART = [
     "-m venv .venv",
     "pip install -r requirements.txt",
     "python scripts/make_synth_video.py",
-    "python main.py --source data/samples/synth_blob.mp4 --headless --no-pace --yes",
+    "python main.py --source data/samples/synth_bird.mp4 --headless --no-pace --yes",
     "python scripts/failure_report.py --latest",
 ]
 
@@ -89,3 +89,24 @@ def test_ci_badge_points_at_the_workflow(readme: str) -> None:
              "(https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml)")
     assert badge in readme.split("\n## ", 1)[0]  # at the top, before the first section
     assert "TODO: add the badge" not in readme
+
+
+def test_quickstart_shows_a_real_detection_from_the_synthetic_clip(readme: str) -> None:
+    import json
+
+    quick = section(readme, "Quickstart")
+    assert "TODO" not in quick
+    event_lines = [l for l in quick.splitlines() if l.startswith('{"ts": ')]
+    assert event_lines, "no events.jsonl line in the quickstart"
+    event = json.loads(event_lines[0])
+    assert set(event) == EVENT_KEYS and event["class"] == "bird"
+    assert "synthetic" in quick and "real photo" in quick
+    assert "data/samples/assets/CREDITS.md" in quick
+    assert "![" in quick and "(docs/quickstart_crop.jpg)" in quick
+    assert (ROOT / "docs" / "quickstart_crop.jpg").is_file()
+    assert "Your own camera" in quick
+
+
+def test_no_fixture_chart_on_the_front_page(readme: str) -> None:
+    assert "docs/visits.png" not in readme.replace("-> docs/visits.png", "")
+    assert "python scripts/plot_visits.py" in section(readme, "Output")

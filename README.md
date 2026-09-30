@@ -54,37 +54,53 @@ python scripts/make_synth_video.py
 What you will see: after a few seconds, one line (paths shortened here):
 
 ```
-Wrote ...\data\samples\synth_blob.mp4 (600 frames, 1280x720@30); blob sweeps ROI x=473 y=284 w=417 h=314 (scaled from roi.example.json)
+Wrote ...\data\samples\synth_bird.mp4 (600 frames, 1280x720@30); a house sparrow photo lands, perches and leaves inside ROI x=473 y=284 w=417 h=314 (scaled from roi.example.json)
 ```
 
-The clip is 20 s of a grey background with noise and a dark blob that moves back and forth across the region of interest.
+The clip is synthetic: 20 s of a plain grey background with sensor-like noise. A real photo of a house sparrow is composited into it (public domain, U.S. Fish and Wildlife Service; source and license in [data/samples/assets/CREDITS.md](data/samples/assets/CREDITS.md)). The bird flies into the region of interest after 3 s, perches for about 13 s and flies off. `--no-bird` makes the older clip instead, a dark blob that YOLO never calls a bird.
 
 **5. Run the pipeline on it**
 
 ```
-python main.py --source data/samples/synth_blob.mp4 --headless --no-pace --yes
+python main.py --source data/samples/synth_bird.mp4 --headless --no-pace --yes
 ```
 
 `--source` reads a file instead of the camera. `--headless` opens no windows. `--no-pace` processes every frame as fast as possible instead of at the video's 30 fps. `--yes` skips the camera checklist.
 
-What you will see: a few seconds of log lines (7 to 8 s on the test runs), then the prompt. The exit code is 0. Abridged:
+What you will see: a few seconds of log lines, then the prompt. The exit code is 0. Abridged:
 
 ```
-INFO    | Run b3f58867: structured log -> ...\logs\run_b3f58867.jsonl
+INFO    | Run bc55c873: structured log -> ...\logs\run_bc55c873.jsonl
 WARNING | YOLO device=cpu -- torch was not built with CUDA. It will still work; ...
 INFO    | Loading YOLO model 'yolov8n.pt' (auto-downloads on first run)
 Downloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt to 'yolov8n.pt': 100% 6.2MB
-INFO    | Opened video file data/samples/synth_blob.mp4: 1280x720 @ 30.0fps, 600 frames
+INFO    | Opened video file data/samples/synth_bird.mp4: 1280x720 @ 30.0fps, 600 frames
 WARNING | No roi.json yet: using the example ROI in roi.example.json, which was drawn for another camera. ...
 WARNING | Saved ROI was for 1920x1080, current frame is 1280x720 (same aspect ratio): rescaled to x=473 y=284 w=417 h=314
 INFO    | MOG2 warmup complete (60 frames). Detection pipeline active.
+INFO    | BIRD detected (conf=0.92, bbox=583,457,103,67)
 INFO    | End of video file after 600 frames
 INFO    | FrameGrabber stopped (captured=600, failures=0)
+INFO    | Bird visit logged: 2026-09-30T14:57:03.251-04:00 seq=121 frames=1 conf=0.9216
 ```
+
+`data/events.jsonl` now holds one visit. This is the line from that run: the real YOLOv8n on CPU, the synthetic clip with the real photo:
+
+```
+{"ts": "2026-09-30T14:57:03.251-04:00", "run_id": "bc55c873", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20260930T145703.251_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20260930T145703.251_seq000121_d0_full.jpg", "last_seen": "2026-09-30T14:57:03.251-04:00", "visit_frames": 1}
+```
+
+The crop snapshot it points to (`data/snapshots/..._crop.jpg`) is the padded motion crop that YOLO classified:
+
+![Crop snapshot from the quickstart run: the composited house sparrow on the synthetic grey background](docs/quickstart_crop.jpg)
+
+*The quickstart's crop snapshot. The bird is a real photograph; the grey background around it is synthetic.*
 
 - **First-run output.** The first run downloads the YOLOv8n weights (6.2 MB) to `yolov8n.pt` in the repository root. Ultralytics may also print a one-time notice about its settings file.
 - **Expected warnings.** The CPU warning is expected with the CPU build. The two ROI warnings come from the example region of interest, which was drawn on a 1920x1080 camera and is rescaled here.
-- **No bird is logged.** YOLO does not see the blob as a bird, so `data/events.jsonl` is not created. The run still exercises every stage up to classification. The run id (`b3f58867` here) is random.
+- **Numbers vary.** Your run id, timestamps and confidence will differ.
+- **`ts` is a processing time here.** It is the wall-clock time at which each frame was read, so with `--no-pace` the 20 s clip spans about 4 s of wall-clock time, not the clip's own timeline.
+- **The stay is understated.** The bird stays about 13 s, yet the visit has `visit_frames: 1` and `last_seen` equal to `ts`. Once the bird sits still, the MOG2 background model learns it within about a second, so the motion gate stops sending it to YOLO. See the known limitations at the end.
 
 **6. Read the run log**
 
@@ -95,8 +111,8 @@ python scripts/failure_report.py --latest
 What you will see: a summary of the run you just made (abridged):
 
 ```
-Runs: 1  Lines: 172  Unparseable lines: 0
-  b3f58867: 2026-09-30T17:25:53.142+00:00 .. 2026-09-30T17:25:58.919+00:00  run success, exit_code=0, 5.8s
+Runs: 1  Lines: 71  Unparseable lines: 0
+  bc55c873: 2026-09-30T18:57:00.645+00:00 .. 2026-09-30T18:57:04.939+00:00  run success, exit_code=0, 4.3s
 
 == Errors: stage x error_type (fail/skip lines carrying an error_type) ==
 stage     input_invalid  external_api  parse  timeout  hardware  unknown  total
@@ -105,26 +121,31 @@ roi_load              1             .      .        .         .        .      1
 == Skips: stage x reason ==
 gate_check               cadence    522
 gate_check                warmup     60
-detection_map         yolo_empty     18
+morph_contour        no_contours     15
+morph_contour     area_below_min      2
 render                  headless    600
 
 == Stages: totals and duration_ms ==
 stage             success  fail  skip   p50_ms   p95_ms
-detector_init           1     0     0  2339.05  2339.05
-yolo_infer             18     0     0    34.43   187.47
-mog2_apply *          600     0     0    ~1.23    ~1.63
+detector_init           1     0     0  2236.96  2236.96
+morph_contour           1     0    17     0.29     0.66
+yolo_infer              1     0     0   102.56   102.56
+mog2_apply *          600     0     0    ~1.23    ~3.21
+persist                 1     0     0     0.56     0.56
 ```
 
 How to read it:
 - The one `roi_load` / `input_invalid` line is the example ROI's resolution not matching the clip. The ROI was rescaled, as the warning said.
-- After the 60-frame warm-up, the motion gate ran on 18 frames (522 frames were skipped for cadence).
-- YOLO ran 18 times and found no bird (`yolo_empty`).
-- MOG2 took 1 to 2 ms per frame on the region of interest; timings vary from run to run.
+- After the 60-frame warm-up, the motion gate ran on 18 frames.
+- Only one of those frames had enough motion, the one just after the bird landed. The other 17 had none (`no_contours`: bird not there yet, or gone) or too little (`area_below_min`: the still bird had faded into the background).
+- YOLO ran once. That took 103 ms because it was the model's cold first call, and it found the bird.
+- `persist` is the visit being written when the run ended.
 - `docs/architecture.md` explains these costs.
 
-**7. A real clip (TODO)**
+**7. Your own camera**
 
-> **TODO:** `data/samples/demo.mp4` does not exist yet. It should be a short clip of a real bird at the car, small enough to commit. When it is added, this step will be `python main.py --source data/samples/demo.mp4 --headless --yes`, followed by the `events.jsonl` lines that run produces.
+To watch a real scene, go to [Running with a real camera](#running-with-a-real-camera) below. Stop that run with `q`, Esc or Ctrl-C, then read `data/events.jsonl` and `python scripts/failure_report.py --latest` as above.
+
 
 ## Running with a real camera
 
@@ -266,10 +287,6 @@ python scripts/plot_visits.py                      # data/events.jsonl -> docs/v
 python scripts/plot_visits.py path/to/events.jsonl --out visits.png --title "Week 1"
 ```
 
-![Bird visits per hour of day, from the 5-event test fixture](docs/visits.png)
-
-*Made from the 5-event test fixture `tests/fixtures/events_5.jsonl`, not real observations: no bird has been logged with this setup yet. It shows the chart's format only.*
-
 **Snapshots** are named `<local time>_seq<frame, 6 digits>_d<index>_{crop,full}.jpg`, for example `20260930T140506.789_seq000091_d0_crop.jpg`.
 
 **Run logs.** Every run writes `logs/run_<run_id>.jsonl`, one line per stage event (`start`, `success`, `fail`, `skip`, with an `error_type`). Per-frame stages are summarised every 300 frames. To see what failed or was skipped and how long each stage took:
@@ -291,7 +308,7 @@ python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
-The `slow` marker covers exactly one test, which runs the real model in a subprocess. Everything else uses test doubles from `tests/fakes.py`:
+The `slow` marker covers two tests that run the real model in a subprocess: a smoke test on the blob clip, and a check that the synthetic bird is detected where the script drew it. Everything else uses test doubles from `tests/fakes.py`:
 
 - **`FakePredictor`** stands in for YOLO. The detector reaches YOLO only through a small `Predictor` protocol (`load()`, `predict()`, `names`), so a test passes the fake in:
 
@@ -325,6 +342,10 @@ Known limitations:
 - **Only the single largest motion contour** in the ROI goes to YOLO on each gated frame. Two birds far apart can yield one detection.
 - **CPU-only by default.** A CUDA build of PyTorch speeds up only the YOLO step (see `requirements.txt`).
 - **A hard kill loses the visit in progress.**
+- **A bird that holds still fades from view.** MOG2 learns a motionless bird into the background within about a second. After that, the motion gate stops sending it to YOLO, so `last_seen` and `visit_frames` understate a long perch. The quickstart clip shows this.
+- **Visits are matched against the visit's latest box** (IoU of at least 0.5; gated frames are about 1 s apart). Two things start a new visit for the same bird:
+  - moving more than about half its body length between gated frames
+  - a motion crop that cuts the bird off, which gives a truncated box
 
 ## License
 

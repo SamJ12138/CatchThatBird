@@ -39,3 +39,17 @@ def test_pyproject_pytest_config() -> None:
     assert any(m.startswith("slow:") for m in pytest_cfg["markers"])
     assert "--strict-markers" in pytest_cfg["addopts"]
     assert "subprocess" in config["tool"]["coverage"]["run"]["patch"]
+
+
+# First major of each action whose action.yml declares `using: node24`
+# (checked in each repo on 2026-09-30); older majors run on the deprecated Node 20.
+NODE24_MAJORS = {"actions/checkout": 5, "actions/setup-python": 6, "actions/upload-artifact": 6}
+
+
+def test_actions_run_on_node_24() -> None:
+    uses = [step["uses"] for job in load_workflow()["jobs"].values()
+            for step in job["steps"] if "uses" in step]
+    assert {u.split("@")[0] for u in uses} == set(NODE24_MAJORS)
+    for use in uses:
+        name, version = use.split("@")
+        assert int(version.lstrip("v").split(".")[0]) >= NODE24_MAJORS[name], use
