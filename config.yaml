@@ -16,6 +16,7 @@ detection:
   dedupe_within_seconds: 10         # a visit closes after this long without the bird confirmed
   visit_iou_threshold: 0.3          # a detection joins an open visit if IoU >= this ...
   visit_center_distance: 2.0        # ... or its centre is within this x max(w, h) of the last box
+  max_visit_seconds: 600            # a longer visit is written as truncated and a new one opens
 
 logging:
   events_file: data/events.jsonl

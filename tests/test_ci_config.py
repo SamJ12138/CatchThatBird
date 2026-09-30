@@ -15,7 +15,8 @@ def load_workflow() -> dict:
 def test_ci_runs_fast_suite_on_ubuntu_and_windows_with_python_312() -> None:
     jobs = load_workflow()["jobs"]
     runners = {job["runs-on"] for job in jobs.values()}
-    assert runners == {"ubuntu-latest", "windows-latest"}
+    # Pinned images: a runner-image migration cannot change CI without a commit.
+    assert runners == {"ubuntu-24.04", "windows-2025"}
     for name, job in jobs.items():
         steps = job["steps"]
         setup = [s for s in steps if str(s.get("uses", "")).startswith("actions/setup-python")]

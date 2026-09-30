@@ -10,7 +10,7 @@ on:
 
 jobs:
   test-ubuntu:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04    # pinned: an image migration cannot change CI without a commit
     outputs:
       coverage: ${{ steps.coverage.outputs.total }}
     steps:
@@ -42,7 +42,7 @@ jobs:
           path: coverage.json
 
   test-windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
     outputs:
       coverage: ${{ steps.coverage.outputs.total }}
     defaults:

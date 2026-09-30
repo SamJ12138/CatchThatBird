@@ -21,20 +21,25 @@ relative to snapshots_dir's parent ("snapshots/<name>.jpg"), so a data
 directory can be moved as a whole.
 
 Open visits are written by close(), which main.py reaches on a normal exit,
-an error, Ctrl-C / SIGINT, SIGTERM and Ctrl-Break. Only a hard kill (SIGKILL,
-TerminateProcess, power loss) loses them. Schema: docs/events-schema.md.
+an error, Ctrl-C / SIGINT, SIGTERM and Ctrl-Break. A visit that reaches
+`max_visit_seconds` is written with "truncated": true and a new one opens on
+the next confirmation. Open visits are checkpointed to open_visits.json next
+to events.jsonl whenever one opens or closes and every `checkpoint_seconds`
+(60) of capture time; the next start writes them with "recovered": true. So a
+hard kill (SIGKILL, TerminateProcess, power loss) loses at most the last 60 s
+of an open visit. Schema: docs/events-schema.md.
 """
 from __future__ import annotations
 
 import json
+import math
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
-
-import math
 
 import cv2
 import numpy as np
@@ -75,6 +80,7 @@ class _Visit:
     last_seen: float
     last_seq: int
     visit_frames: int = 1
+    started: float = 0.0  # capture time of the first detection
 
 
 class EventLogger:
@@ -88,6 +94,8 @@ class EventLogger:
         dedupe_within_seconds: float = 10.0,
         iou_threshold: float = 0.3,
         center_distance: float = 2.0,
+        max_visit_seconds: float = 600.0,
+        checkpoint_seconds: float = 60.0,
         root: Path = PROJECT_ROOT,
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -112,6 +120,10 @@ class EventLogger:
         self._window = float(dedupe_within_seconds)
         self._iou_threshold = iou_threshold
         self._center_distance = center_distance
+        self._max_visit = float(max_visit_seconds)
+        self._checkpoint_every = float(checkpoint_seconds)
+        self.sidecar_path = self.events_path.parent / "open_visits.json"
+        self._last_checkpoint: Optional[float] = None
 
         self._open: list[_Visit] = []
         self._capped_days: set[date] = set()
@@ -119,6 +131,7 @@ class EventLogger:
 
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        self._recover()  # before counting, so recovered lines count toward the daily cap
         self._day_counts = self._count_existing_events()
         self.sweep_retention(now())
 
@@ -128,7 +141,8 @@ class EventLogger:
         """Feed every processed frame (even with no detections) so visits
         expire on time. Returns the events opened on this frame."""
         t = frame.captured_wall_time
-        self._expire(t)
+        n_before = len(self._open)
+        closed = self._expire(t)
         opened: list[dict[str, Any]] = []
         for index, det in enumerate(detections):
             visit = self._match(det, t)
@@ -161,6 +175,10 @@ class EventLogger:
             self._day_counts[day] += 1
             event = self._open_visit(frame, det, index)
             opened.append(event)
+        changed = bool(closed or opened) or len(self._open) != n_before
+        if changed or (self._last_checkpoint is not None
+                       and t - self._last_checkpoint >= self._checkpoint_every):
+            self._checkpoint(t)
         return opened
 
     def open_tracks(self, t: float) -> list[BBox]:
@@ -176,6 +194,7 @@ class EventLogger:
         for visit in self._open:
             self._write_event(visit)
         self._open.clear()
+        self._checkpoint(None)  # nothing open: removes the sidecar
 
     def manual_snapshot_path(self, frame: Frame) -> Path:
         """Where the preview's `s` key saves a frame."""
@@ -243,14 +262,89 @@ class EventLogger:
                 best, best_key = visit, key
         return best
 
-    def _expire(self, t: float) -> None:
+    def _expire(self, t: float) -> int:
+        """Write visits unconfirmed for longer than the window, and cut visits
+        that have lasted max_visit_seconds (truncated). Returns how many."""
         still_open = []
         for visit in self._open:
             if t - visit.last_seen > self._window:
                 self._write_event(visit)
+            elif t - visit.started >= self._max_visit:
+                self._write_event(visit, truncated=True)
             else:
                 still_open.append(visit)
+        closed = len(self._open) - len(still_open)
         self._open = still_open
+        return closed
+
+    def _snapshot_event(self, visit: _Visit, **flags: bool) -> dict[str, Any]:
+        return dict(visit.event, last_seen=iso(visit.last_seen), visit_frames=visit.visit_frames,
+                    truncated=flags.get("truncated", False), recovered=flags.get("recovered", False))
+
+    def _checkpoint(self, t: Optional[float]) -> None:
+        """Rewrite open_visits.json with every open visit (atomic replace,
+        fsync), or remove it when nothing is open."""
+        self._last_checkpoint = t
+        try:
+            if not self._open:
+                self.sidecar_path.unlink(missing_ok=True)
+                return
+            tmp = self.sidecar_path.with_name(self.sidecar_path.name + ".tmp")
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump([self._snapshot_event(v) for v in self._open], f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.sidecar_path)
+        except OSError as e:
+            logger.error(f"Could not checkpoint open visits to {self.sidecar_path}: {e}")
+            self._obs.emit("checkpoint", "fail", error_type="hardware", error_message=describe(e),
+                           context={"path": str(self.sidecar_path)})
+
+    def _recover(self) -> None:
+        """Write the visits a previous run left open (it ended without close(),
+        e.g. a hard kill) with "recovered": true, then delete the sidecar.
+        A visit already in events.jsonl (same run_id and frame_seq) is skipped:
+        the kill came between appending its line and updating the sidecar."""
+        if not self.sidecar_path.exists():
+            return
+        sp = self._obs.span("recover", context={"path": str(self.sidecar_path)})
+        try:
+            visits = json.loads(self.sidecar_path.read_text(encoding="utf-8"))
+            if not isinstance(visits, list):
+                raise ValueError("expected a JSON list")
+        except (OSError, ValueError) as e:
+            bad = self.sidecar_path.with_name(self.sidecar_path.name + ".corrupt")
+            os.replace(self.sidecar_path, bad)
+            logger.error(f"Unreadable {self.sidecar_path.name} ({e}); moved to {bad.name}")
+            sp.fail("parse", describe(e), {"moved_to": str(bad)})
+            return
+        written = set()
+        if self.events_path.exists():
+            with self.events_path.open(encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        ev = json.loads(line)
+                        written.add((ev["run_id"], ev["frame_seq"]))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        recovered = skipped = 0
+        for event in visits:
+            if (event.get("run_id"), event.get("frame_seq")) in written:
+                skipped += 1
+                continue
+            self._append(dict(event, recovered=True))
+            recovered += 1
+        self.sidecar_path.unlink()
+        if recovered:
+            logger.warning(f"Recovered {recovered} visit(s) left open by a run that did not "
+                           f"close cleanly; written with \"recovered\": true")
+        sp.success({"recovered": recovered, "already_written": skipped})
+
+    def _append(self, event: dict[str, Any]) -> None:
+        with self.events_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     def _open_visit(self, frame: Frame, det: Detection, index: int) -> dict[str, Any]:
         t = frame.captured_wall_time
@@ -274,7 +368,7 @@ class EventLogger:
             "last_seen": iso(t),
             "visit_frames": 1,
         }
-        self._open.append(_Visit(event, det.class_name, det.bbox_xywh, t, frame.seq))
+        self._open.append(_Visit(event, det.class_name, det.bbox_xywh, t, frame.seq, started=t))
         return event
 
     def _write_image(self, path: Path, image: np.ndarray, seq: int) -> Optional[Path]:
@@ -286,21 +380,21 @@ class EventLogger:
                        error_message=message, context={"path": str(path)})
         return None
 
-    def _write_event(self, visit: _Visit) -> None:
+    def _write_event(self, visit: _Visit, truncated: bool = False) -> None:
         t0 = time.perf_counter()
-        event = dict(visit.event, last_seen=iso(visit.last_seen), visit_frames=visit.visit_frames)
-        with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event) + "\n")
+        event = self._snapshot_event(visit, truncated=truncated)
+        self._append(event)
         self._obs.emit(
             "persist", "success", frame_seq=event["frame_seq"],
             duration_ms=(time.perf_counter() - t0) * 1000.0,
             context={"ts": event["ts"], "last_seen": event["last_seen"],
-                     "visit_frames": event["visit_frames"],
+                     "visit_frames": event["visit_frames"], "truncated": truncated,
                      "snapshot_crop": event["snapshot_crop"]},
         )
         logger.info(
             f"Bird visit logged: {event['ts']} seq={event['frame_seq']} "
             f"frames={event['visit_frames']} conf={event['confidence']}"
+            + (" (truncated at max_visit_seconds)" if truncated else "")
         )
 
     def _display_path(self, path: Optional[Path]) -> Optional[str]:

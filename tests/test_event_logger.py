@@ -21,7 +21,8 @@ from tests.conftest import ROOT, read_log, write_test_config
 
 T0 = datetime(2026, 9, 30, 14, 5, 6, 789000).timestamp()  # local time
 EVENT_KEYS = {"ts", "run_id", "frame_seq", "class", "confidence", "bbox_xywh",
-              "snapshot_crop", "snapshot_full", "last_seen", "visit_frames"}
+              "snapshot_crop", "snapshot_full", "last_seen", "visit_frames",
+              "truncated", "recovered"}
 
 
 def iso(t: float) -> str:

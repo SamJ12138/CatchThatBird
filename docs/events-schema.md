@@ -15,6 +15,8 @@
 | `snapshot_crop` | string or null | The padded crop YOLO saw, as a path relative to the snapshots directory's **parent**: `snapshots/<name>.jpg`. `null` if the write failed |
 | `snapshot_full` | string or null | The full frame, same path convention. `null` when `logging.save_full_frame` is false or the write failed |
 | `last_seen` | string | Capture time of the visit's last matching detection (same format as `ts`) |
+| `truncated` | bool | `true` if the visit reached `detection.max_visit_seconds` (600 s) and was cut there. The next confirmation of the bird opens a new visit, so a very long stay is several consecutive lines |
+| `recovered` | bool | `true` if the line was written at startup from `open_visits.json`: the previous run ended without closing the visit (a hard kill). `last_seen` and `visit_frames` are as of the last checkpoint |
 | `visit_frames` | int | Number of gated frames with a matching detection, ≥ 1 |
 
 Lines are written when a visit **closes**, so they appear in close order. Sort by `ts` for start order.
@@ -35,7 +37,18 @@ A visit closes when no matching detection has been seen for `detection.dedupe_wi
 
 A signal that arrives while a frame is being detected and persisted is held until that frame is done, so its visit is complete when it is written.
 
-**Only a hard kill loses the open visits:** SIGKILL, a power loss, or on Windows `TerminateProcess`. That last one covers `taskkill /F`, Task Manager's End task, and `os.kill(pid, signal.SIGTERM)` from another process. What is lost is the visit in progress: at most the last `dedupe_within_seconds` after the bird was last seen, or longer for a bird that is still perching. Closed visits are already on disk. Each line is appended and the file closed right away.
+**A hard kill loses at most the last 60 s of an open visit.** A hard kill is SIGKILL, a power loss, or on Windows `TerminateProcess` (`taskkill /F`, Task Manager's End task, `os.kill(pid, signal.SIGTERM)` from another process).
+
+- **The checkpoint file.** Every open visit, as it would be written now, is saved to `open_visits.json` next to `events.jsonl`:
+  - whenever a visit opens or closes
+  - every 60 s of capture time (media time for a video file)
+  - by atomic replace, after an `fsync`
+  A clean close removes the file.
+- **Recovery.** If the file exists at startup, its visits are appended to `events.jsonl` with `"recovered": true` before anything else, and the file is deleted. Their `last_seen` and `visit_frames` are those of the last checkpoint.
+- **No duplicates.** A visit already in `events.jsonl` (same `run_id` and `frame_seq`) is skipped. That happens when the kill fell between appending its line and rewriting the checkpoint.
+- **Unreadable file.** An unreadable `open_visits.json` is renamed to `open_visits.json.corrupt` and logged.
+
+Closed visits are already on disk: each line is appended, flushed and `fsync`ed.
 
 ## Limits
 

@@ -37,6 +37,7 @@ class DetectionConfig(BaseModel):
     dedupe_within_seconds: int = 10
     visit_iou_threshold: float = 0.3
     visit_center_distance: float = 2.0
+    max_visit_seconds: int = 600
 
 
 class LoggingConfig(BaseModel):

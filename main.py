@@ -499,6 +499,7 @@ def run_preview(
         dedupe_within_seconds=config.detection.dedupe_within_seconds,
         iou_threshold=config.detection.visit_iou_threshold,
         center_distance=config.detection.visit_center_distance,
+        max_visit_seconds=config.detection.max_visit_seconds,
         root=data_root,
     )
 

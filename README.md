@@ -70,7 +70,7 @@ python main.py --source data/samples/synth_bird.mp4 --headless --no-pace --yes
 What you will see: a few seconds of log lines, then the prompt. The exit code is 0. Abridged:
 
 ```
-INFO    | Run 1e87a4d2: structured log -> ...\logs\run_1e87a4d2.jsonl
+INFO    | Run 85c3990f: structured log -> ...\logs\run_85c3990f.jsonl
 WARNING | YOLO device=cpu -- torch was not built with CUDA. It will still work; ...
 INFO    | Loading YOLO model 'yolov8n.pt' (auto-downloads on first run)
 Downloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt to 'yolov8n.pt': 100% 6.2MB
@@ -83,13 +83,13 @@ INFO    | BIRD detected (conf=0.91, bbox=583,457,103,68)
 ...       (14 "BIRD detected" lines, one per second while the bird perches)
 INFO    | End of video file after 600 frames
 INFO    | FrameGrabber stopped (captured=600, failures=0)
-INFO    | Bird visit logged: 2026-09-30T15:21:08.045-04:00 seq=121 frames=14 conf=0.9216
+INFO    | Bird visit logged: 2026-09-30T15:54:31.165-04:00 seq=121 frames=14 conf=0.9216
 ```
 
 `data/events.jsonl` now holds one visit. This is the line from that run: the real YOLOv8n on CPU, the synthetic clip with the real photo:
 
 ```
-{"ts": "2026-09-30T15:21:08.045-04:00", "run_id": "1e87a4d2", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20260930T152108.045_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20260930T152108.045_seq000121_d0_full.jpg", "last_seen": "2026-09-30T15:21:21.045-04:00", "visit_frames": 14}
+{"ts": "2026-09-30T15:54:31.165-04:00", "run_id": "85c3990f", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20260930T155431.165_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20260930T155431.165_seq000121_d0_full.jpg", "last_seen": "2026-09-30T15:54:44.165-04:00", "visit_frames": 14, "truncated": false, "recovered": false}
 ```
 
 The crop snapshot it points to (`data/snapshots/..._crop.jpg`) is the padded motion crop that YOLO classified when the visit opened:
@@ -114,7 +114,7 @@ What you will see: a summary of the run you just made (abridged):
 
 ```
 Runs: 1  Lines: 174  Unparseable lines: 0
-  1e87a4d2: 2026-09-30T19:21:01.781+00:00 .. 2026-09-30T19:21:07.632+00:00  run success, exit_code=0, 5.9s
+  85c3990f: 2026-09-30T19:54:24.797+00:00 .. 2026-09-30T19:54:29.611+00:00  run success, exit_code=0, 4.8s
 
 == Errors: stage x error_type (fail/skip lines carrying an error_type) ==
 stage     input_invalid  external_api  parse  timeout  hardware  unknown  total
@@ -130,11 +130,11 @@ render                  headless    600
 
 == Stages: totals and duration_ms ==
 stage             success  fail  skip   p50_ms   p95_ms
-detector_init           1     0     0  2233.58  2233.58
-morph_contour           1     0    17     0.47     0.74
-yolo_infer             16     0     0    59.50    76.92
-persist                 1     0    13     1.04     1.04
-mog2_apply *          600     0     0    ~2.09    ~3.44
+detector_init           1     0     0  2342.12  2342.12
+morph_contour           1     0    17     0.26     0.32
+yolo_infer             16     0     0    36.98    61.95
+persist                 1     0    13    11.47    11.47
+mog2_apply *          600     0     0    ~1.19    ~1.89
 ```
 
 How to read it:
@@ -244,6 +244,7 @@ All settings are in `config.yaml`. Unknown keys and wrong types stop the program
 | `detection.dedupe_within_seconds` | `10` | A visit closes after this long without the bird being confirmed |
 | `detection.visit_iou_threshold` | `0.3` | A detection joins an open visit if its box overlaps the visit's last box by at least this IoU ... |
 | `detection.visit_center_distance` | `2.0` | ... or if its centre is within this many times max(width, height) of the last box's centre |
+| `detection.max_visit_seconds` | `600` | A visit this long is written with `"truncated": true`, and the next confirmation opens a new one |
 | `logging.events_file` | `data/events.jsonl` | Where visits are appended |
 | `logging.snapshots_dir` | `data/snapshots` | Where snapshots are written |
 | `logging.snapshot_format` | `jpeg` | `jpeg` or `png` |
@@ -287,8 +288,10 @@ Exit codes: 0 for a normal end, including Ctrl-C and SIGTERM; 1 for an error, wi
 | `snapshot_full` | The full frame, same convention, or `null` |
 | `last_seen` | Capture time of the last matching detection |
 | `visit_frames` | Gated frames in which the bird was detected |
+| `truncated` | `true` if the visit was cut at `detection.max_visit_seconds`; the bird's next confirmation starts a new line |
+| `recovered` | `true` if the line was written at startup from `data/open_visits.json`: the visit was still open when the previous run was killed |
 
-Lines are written when a visit closes: 10 s after the bird was last seen, or when the run ends. The run ends on a normal exit, an error, Ctrl-C, SIGTERM or Ctrl-Break. Only a hard kill (SIGKILL, `taskkill /F`, power loss) loses the visit in progress.
+Lines are written when a visit closes: 10 s after the bird was last seen, or when the run ends. The run ends on a normal exit, an error, Ctrl-C, SIGTERM or Ctrl-Break. Open visits are also saved to `data/open_visits.json`: whenever a visit opens or closes, and every 60 s. After a hard kill (SIGKILL, `taskkill /F`, power loss), the next start writes them with `"recovered": true`. Only the last 60 s of an open visit (at most) are lost.
 
 **Visits per hour.** `scripts/plot_visits.py` counts visits by hour of day (the local clock in each `ts`, all days summed) and writes a bar chart. It needs matplotlib, which `requirements-dev.txt` lists and Ultralytics already installs:
 
@@ -351,10 +354,10 @@ Known limitations:
 - **Capture backends are Windows-first.** Device names come from DirectShow, and capture tries DirectShow, then Media Foundation. Video files work on any OS, but live capture on Linux and macOS is untested.
 - **Only the single largest motion contour** in the ROI goes to YOLO on each gated frame. Two birds far apart can yield one detection.
 - **CPU-only by default.** A CUDA build of PyTorch speeds up only the YOLO step (see `requirements.txt`).
-- **A hard kill loses the visit in progress.**
+- **A hard kill loses at most the last 60 s of an open visit.** The visit itself is recovered on the next start from `data/open_visits.json`, with `"recovered": true`, but `last_seen` and `visit_frames` are as of the last checkpoint.
 - **Two birds close together can merge.** A detection joins an open visit if its centre is within 2x the visit's box size. That keeps a hopping bird in one visit, but two birds perched side by side count as one.
 - **Open visits cost YOLO time.** While a visit is open, each gated frame runs YOLO once per open visit, plus once for motion elsewhere. That continues for up to `dedupe_within_seconds` after the bird has left.
-- **Anything YOLO keeps calling a bird never closes its visit.** A still object that YOLO scores at or above the threshold (a decoy, say) keeps its visit open, and the visit is only written when the run ends.
+- **Anything YOLO keeps calling a bird stays one long visit.** A still object that YOLO scores at or above the threshold (a decoy, say) is written as a truncated visit every `max_visit_seconds` (10 min by default), for as long as it stays.
 
 ## License
 

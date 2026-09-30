@@ -169,7 +169,7 @@ To reproduce a row, regenerate the blob clip these runs used (`python scripts/ma
 - **Capture backends are Windows-first.** Device names come from DirectShow (pygrabber), and the capture tries DSHOW and then MSMF. On Linux and macOS, `--source` files work, but live capture and device naming are untested.
 - **Only the largest motion contour** in the ROI is classified on a gated frame (open visits are classified separately).
 - **Two birds within 2 x a bird's size of each other merge into one visit.**
-- **Anything YOLO keeps calling a bird keeps its visit open,** and the visit is only written when the run ends.
+- **Anything YOLO keeps calling a bird is one long visit,** written as truncated every `max_visit_seconds` (600 s).
 - **CPU by default.** CUDA works if a CUDA build of torch is installed (see `requirements.txt`), but only YOLO benefits.
 - **Detection shares the UI thread,** so the preview stalls for one YOLO call per second.
-- **A hard kill loses the open visit** (see [events-schema.md](events-schema.md)).
+- **A hard kill loses at most the last 60 s of an open visit.** It is recovered from `open_visits.json` at the next start (see [events-schema.md](events-schema.md)).
