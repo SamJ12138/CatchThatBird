@@ -5,7 +5,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import cv2
 import numpy as np
@@ -21,9 +21,22 @@ from camera import (
 from config_schema import AppConfig, load_config
 from obs import ObsLogger, Span, describe, new_run_id
 
+if TYPE_CHECKING:
+    from detector import Predictor
+
 
 ROI_FILE = Path(__file__).resolve().parent / "data" / "roi.json"
 LOG_DIR = Path(__file__).resolve().parent / "logs"
+ASPECT_TOLERANCE = 0.01  # relative; 1920x1080 vs 1280x720 match, 640x480 does not
+
+
+class ExitError(Exception):
+    """A startup/run condition that ends the process with `code` and a
+    one-line message (no traceback)."""
+
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
 ROI_SELECT_WINDOW = "Select ROI -- drag a rectangle around the car. Enter/Space = confirm, C = whole frame"
 
 
@@ -160,9 +173,18 @@ def resolve_device_selection(
         sp.fail("input_invalid", "selected device looks like a built-in webcam; continuing",
                 {"name": selected_name, "pocket_index": pocket_idx})
     else:
-        logger.info(
-            f"Selected device [{config.camera.device_index}] '{selected_name}'"
+        pocket_idx = find_pocket_index(devices)
+        suggestion = (
+            f" A DJI-like device is at index {pocket_idx} -- pass --device {pocket_idx}."
+            if pocket_idx is not None
+            else ""
         )
+        logger.warning(
+            f"Selected device [{config.camera.device_index}] '{selected_name}' "
+            f"is not recognised as the Pocket 3; continuing anyway.{suggestion}"
+        )
+        sp.fail("input_invalid", "selected device not recognised as a Pocket 3; continuing",
+                {"name": selected_name, "pocket_index": pocket_idx})
     sp.success({"name": selected_name, "kind": kind})
     return selected_name
 
@@ -218,16 +240,26 @@ def _load_or_select_roi(
     if roi_path.exists() and not force_select:
         try:
             data = json.loads(roi_path.read_text())
-            if (
-                data.get("frame_width") == W
-                and data.get("frame_height") == H
-            ):
-                roi = (
-                    int(data["x"]),
-                    int(data["y"]),
-                    int(data["w"]),
-                    int(data["h"]),
-                )
+            saved_w, saved_h = int(data["frame_width"]), int(data["frame_height"])
+            if saved_w <= 0 or saved_h <= 0:
+                raise ValueError(f"frame size {saved_w}x{saved_h} is not positive")
+            if data.get("whole_frame") is True:
+                logger.info(f"ROI file {roi_path} says whole frame (pass --select-roi to redo)")
+                sp.success({"source": "file_whole_frame", "roi": None})
+                return None
+            roi = (int(data["x"]), int(data["y"]), int(data["w"]), int(data["h"]))
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logger.warning(
+                f"Failed to load ROI from {roi_path}: {e}. Re-selecting."
+            )
+            obs.emit("roi_load", "fail", error_type="parse", error_message=describe(e))
+            if headless:
+                raise ExitError(
+                    f"Cannot read ROI file {roi_path} ({e}); fix or delete it, or run "
+                    "without --headless to select a new ROI"
+                ) from e
+        else:
+            if (saved_w, saved_h) == (W, H):
                 logger.info(
                     f"Loaded ROI from {roi_path}: "
                     f"x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]} "
@@ -235,25 +267,34 @@ def _load_or_select_roi(
                 )
                 sp.success({"source": "file", "roi": list(roi)})
                 return roi
-            logger.warning(
-                f"Saved ROI was for "
-                f"{data.get('frame_width')}x{data.get('frame_height')}, "
-                f"current frame is {W}x{H}. Re-selecting."
-            )
             obs.emit(
                 "roi_load", "fail", error_type="input_invalid",
                 error_message="saved ROI resolution does not match frame",
-                context={"saved_wh": [data.get("frame_width"), data.get("frame_height")],
-                         "frame_wh": [W, H]},
+                context={"saved_wh": [saved_w, saved_h], "frame_wh": [W, H]},
             )
-        except Exception as e:
+            if abs((saved_w / saved_h) / (W / H) - 1) <= ASPECT_TOLERANCE:
+                roi = _rescale_roi(roi, (saved_w, saved_h), (W, H))
+                logger.warning(
+                    f"Saved ROI was for {saved_w}x{saved_h}, current frame is "
+                    f"{W}x{H} (same aspect ratio): rescaled to "
+                    f"x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}"
+                )
+                sp.success({"source": "file_rescaled", "roi": list(roi),
+                            "saved_wh": [saved_w, saved_h]})
+                return roi
             logger.warning(
-                f"Failed to load ROI from {roi_path}: {e}. Re-selecting."
+                f"Saved ROI was for {saved_w}x{saved_h}, current frame is {W}x{H} "
+                "(different aspect ratio). Re-selecting."
             )
-            obs.emit("roi_load", "fail", error_type="parse", error_message=describe(e))
+            if headless:
+                raise ExitError(
+                    f"Saved ROI in {roi_path} is for {saved_w}x{saved_h} but frames are "
+                    f"{W}x{H} (different aspect ratio); run without --headless and "
+                    "pass --select-roi"
+                )
 
     if headless:
-        logger.info("Headless: no compatible saved ROI -- using whole frame")
+        logger.info("Headless: no saved ROI -- using whole frame")
         sp.skip("headless_whole_frame")
         return None
 
@@ -270,13 +311,17 @@ def _load_or_select_roi(
     cv2.destroyWindow(ROI_SELECT_WINDOW)
 
     x, y, w, h = (int(v) for v in selection)
+    roi_path.parent.mkdir(parents=True, exist_ok=True)
     if w == 0 or h == 0:
-        logger.info("No ROI selected -- using whole frame")
+        roi_path.write_text(json.dumps(
+            {"whole_frame": True, "frame_width": W, "frame_height": H}, indent=2,
+        ))
+        logger.info(f"No ROI selected -- using whole frame (saved to {roi_path})")
         sp.skip("selection_empty", error_type="input_invalid",
-                error_message="cv2.selectROI returned zero width/height; using whole frame")
+                error_message="cv2.selectROI returned zero width/height; using whole frame",
+                context={"saved": True})
         return None
 
-    roi_path.parent.mkdir(parents=True, exist_ok=True)
     roi_path.write_text(json.dumps(
         {"x": x, "y": y, "w": w, "h": h, "frame_width": W, "frame_height": H},
         indent=2,
@@ -288,6 +333,19 @@ def _load_or_select_roi(
     return (x, y, w, h)
 
 
+def _rescale_roi(
+    roi: tuple[int, int, int, int],
+    saved_wh: tuple[int, int],
+    frame_wh: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    sx = frame_wh[0] / saved_wh[0]
+    sy = frame_wh[1] / saved_wh[1]
+    x, y = round(roi[0] * sx), round(roi[1] * sy)
+    w = min(round(roi[2] * sx), frame_wh[0] - x)
+    h = min(round(roi[3] * sy), frame_wh[1] - y)
+    return (x, y, w, h)
+
+
 def run_preview(
     config: AppConfig,
     *,
@@ -296,6 +354,8 @@ def run_preview(
     source: Optional[str] = None,
     headless: bool = False,
     pace: bool = True,
+    roi_file: Path = ROI_FILE,
+    predictor: Optional[Predictor] = None,
 ) -> None:
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
     from detector import Detection, Detector
@@ -321,10 +381,10 @@ def run_preview(
         sp.success({"frame_seq": first_frame.seq})
 
         roi = load_or_select_roi(
-            first_frame.image, ROI_FILE, force_select=force_select_roi,
+            first_frame.image, roi_file, force_select=force_select_roi,
             headless=headless, obs=obs,
         )
-        detector = Detector(config.detection, roi=roi, obs=obs)
+        detector = Detector(config.detection, roi=roi, obs=obs, predictor=predictor)
 
         if not headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -485,7 +545,7 @@ def run_preview(
                 snap_count += 1
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="CatchThatBird -- bird detector on Pocket 3 webcam feed"
     )
@@ -525,18 +585,33 @@ def parse_args() -> argparse.Namespace:
         help="With --source: read the file as fast as the pipeline consumes it "
              "(no real-time pacing, no dropped frames). For tests.",
     )
-    return p.parse_args()
+    p.add_argument(
+        "--roi-file",
+        type=Path,
+        default=ROI_FILE,
+        metavar="PATH",
+        help=f"ROI file to load/save (default: {ROI_FILE.relative_to(ROI_FILE.parents[1])}).",
+    )
+    p.add_argument(
+        "--log-dir",
+        type=Path,
+        default=LOG_DIR,
+        metavar="DIR",
+        help="Directory for the run_<id>.jsonl structured log (default: logs/).",
+    )
+    return p.parse_args(argv)
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None, *, predictor: Optional[Predictor] = None) -> int:
+    """`argv` and `predictor` are seams for tests (a fake predictor avoids YOLO)."""
     configure_logger()
-    args = parse_args()
+    args = parse_args(argv)
 
-    obs = ObsLogger(new_run_id(), LOG_DIR)
+    obs = ObsLogger(new_run_id(), args.log_dir)
     logger.info(f"Run {obs.run_id}: structured log -> {obs.path}")
     try:
-        with obs.span("run", context={"argv": sys.argv[1:]}) as run:
-            code = _main(args, obs, run)
+        with obs.span("run", context={"argv": sys.argv[1:] if argv is None else argv}) as run:
+            code = _main(args, obs, run, predictor)
             if code != 0:
                 run.fail("unknown", f"exit code {code}", {"exit_code": code})
             run.success({"exit_code": code})
@@ -545,7 +620,12 @@ def main() -> int:
         obs.close()
 
 
-def _main(args: argparse.Namespace, obs: ObsLogger, run: Span) -> int:
+def _main(
+    args: argparse.Namespace,
+    obs: ObsLogger,
+    run: Span,
+    predictor: Optional[Predictor] = None,
+) -> int:
     with obs.span("config_load", error_type="parse") as sp:
         config_path = Path(__file__).resolve().parent / "config.yaml"
         if not config_path.exists():
@@ -583,7 +663,12 @@ def _main(args: argparse.Namespace, obs: ObsLogger, run: Span) -> int:
         run_preview(
             config, force_select_roi=args.select_roi, obs=obs,
             source=args.source, headless=args.headless, pace=not args.no_pace,
+            roi_file=args.roi_file, predictor=predictor,
         )
+    except ExitError as e:
+        logger.error(str(e))
+        run.fail("input_invalid", str(e), {"exit_code": e.code})
+        return e.code
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         run.skip("keyboard_interrupt", context={"exit_code": 0})

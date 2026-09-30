@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, NamedTuple, Optional, Protocol
 
 import cv2
-import torch
+import numpy as np
 from loguru import logger
-from ultralytics import YOLO
 
 from camera import Frame
 from config_schema import DetectionConfig
@@ -26,10 +25,97 @@ class Detection:
     captured_wall_time: float              # time.time() at detection moment
 
 
+class RawBox(NamedTuple):
+    """One predictor box, in CROP pixel coordinates."""
+    cls_id: int
+    conf: float
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class Predictor(Protocol):
+    names: dict[int, str]  # class id -> class name, valid after load()
+    device: str            # valid after load()
+    last_meta: dict[str, Any]
+
+    def load(self) -> None: ...
+
+    def predict(
+        self,
+        crop: np.ndarray,
+        *,
+        conf: float,
+        classes: list[int],
+        frame_seq: int,
+        origin: tuple[int, int],
+    ) -> list[RawBox]:
+        """Boxes in crop coordinates. `frame_seq` and `origin` (crop top-left
+        in the full frame) are context for test fakes; YOLO ignores them."""
+        ...
+
+
+class YoloPredictor:
+    """The real predictor: ultralytics YOLO. torch/ultralytics are imported in
+    load(), so importing this module stays cheap (and test-safe)."""
+
+    def __init__(self, model_path: str) -> None:
+        self.model_path = model_path
+        self.names: dict[int, str] = {}
+        self.device = "cpu"
+        self.last_meta: dict[str, Any] = {}
+        self._model: Any = None
+
+    def load(self) -> None:
+        import torch
+        from ultralytics import YOLO
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.device == "cuda":
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info(f"YOLO device=cuda ({gpu_name})")
+        else:
+            logger.warning(
+                "YOLO device=cpu -- torch was not built with CUDA. "
+                "It will still work; if you wanted GPU, reinstall torch with a "
+                "CUDA wheel (see requirements.txt)."
+            )
+        logger.info(f"Loading YOLO model '{self.model_path}' (auto-downloads on first run)")
+        self._model = YOLO(self.model_path)
+        self.names = dict(self._model.names)
+
+    def predict(
+        self,
+        crop: np.ndarray,
+        *,
+        conf: float,
+        classes: list[int],
+        frame_seq: int,
+        origin: tuple[int, int],
+    ) -> list[RawBox]:
+        results = self._model.predict(
+            crop, device=self.device, verbose=False, conf=conf, classes=classes,
+        )
+        boxes: list[RawBox] = []
+        without_boxes = 0
+        for r in results:
+            if r.boxes is None:
+                without_boxes += 1
+                continue
+            for box in r.boxes:
+                x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
+                boxes.append(RawBox(int(box.cls[0]), float(box.conf[0]), x1, y1, x2, y2))
+        self.last_meta = {"n_results": len(results), "n_results_without_boxes": without_boxes}
+        return boxes
+
+
 class Detector:
     """Two-stage gating:
       every frame  -> MOG2 background subtraction on ROI region (or full frame)
-      every N-th   -> motion contour gate -> crop+pad -> YOLOv8n -> class/conf filter
+      every N-th   -> motion contour gate -> crop+pad -> predictor -> class/conf filter
+
+    The predictor defaults to YoloPredictor(config.yolo_model); tests inject a fake.
 
     Restricting MOG2 to the ROI region (rather than full frame + mask) gives
     us two wins at once: false motion outside the ROI never enters the pipeline,
@@ -42,6 +128,7 @@ class Detector:
         roi: Optional[ROI] = None,
         *,
         obs: ObsLogger,
+        predictor: Optional[Predictor] = None,
     ) -> None:
         self._obs = obs
         sp = obs.span("detector_init", context={"model": config.yolo_model})
@@ -55,23 +142,15 @@ class Detector:
         # Morphology kernel for noise cleanup on the gated frame's mask.
         self._morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        if self._device == "cuda":
-            gpu_name = torch.cuda.get_device_name(0)
-            logger.info(f"YOLO device=cuda ({gpu_name})")
-        else:
-            logger.warning(
-                "YOLO device=cpu -- torch was not built with CUDA. "
-                "It will still work; if you wanted GPU, reinstall torch with a "
-                "CUDA wheel (see requirements.txt)."
-            )
-
-        logger.info(f"Loading YOLO model '{config.yolo_model}' (auto-downloads on first run)")
+        self._predictor: Predictor = (
+            predictor if predictor is not None else YoloPredictor(config.yolo_model)
+        )
         try:
-            self._model = YOLO(config.yolo_model)
+            self._predictor.load()
         except Exception as e:
             sp.fail("external_api", describe(e))
             raise
+        self._device = self._predictor.device
         try:
             self._target_class_ids = self._resolve_class_ids()
         except ValueError as e:
@@ -109,7 +188,7 @@ class Detector:
         })
 
     def _resolve_class_ids(self) -> list[int]:
-        names: dict[int, str] = self._model.names
+        names: dict[int, str] = self._predictor.names
         name_to_id = {n: i for i, n in names.items()}
         ids: list[int] = []
         unknown: list[str] = []
@@ -156,7 +235,7 @@ class Detector:
         )
         self._frame_count += 1
 
-        if self._frame_count < self._config.motion_warmup_frames:
+        if self._frame_count <= self._config.motion_warmup_frames:
             if self._frame_count == 1:
                 self._obs.emit(
                     "gate_check", "skip", frame_seq=seq,
@@ -224,50 +303,40 @@ class Detector:
             "yolo_infer", frame_seq=seq, error_type="external_api",
             context={"crop_wh": [x1 - x0, y1 - y0], "device": self._device},
         ) as sp:
-            results = self._model.predict(
+            boxes = self._predictor.predict(
                 crop,
-                device=self._device,
-                verbose=False,
                 conf=self._config.yolo_confidence_threshold,
                 classes=self._target_class_ids,
+                frame_seq=seq,
+                origin=(x0, y0),
             )
-            sp.context.update(
-                n_results=len(results),
-                n_raw_boxes=sum(len(r.boxes) for r in results if r.boxes is not None),
-                n_results_without_boxes=sum(1 for r in results if r.boxes is None),
-            )
+            sp.context.update(n_raw_boxes=len(boxes), **self._predictor.last_meta)
 
         with self._obs.span("detection_map", frame_seq=seq) as sp:
             wall = time.time()
             detections: list[Detection] = []
             dropped_class = dropped_conf = 0
-            for r in results:
-                if r.boxes is None:
+            for box in boxes:
+                if box.cls_id not in self._target_class_ids:
+                    dropped_class += 1
                     continue
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    if cls_id not in self._target_class_ids:
-                        dropped_class += 1
-                        continue
-                    conf = float(box.conf[0])
-                    if conf < self._config.yolo_confidence_threshold:
-                        dropped_conf += 1
-                        continue
-                    bx1, by1, bx2, by2 = (float(v) for v in box.xyxy[0].tolist())
-                    detections.append(
-                        Detection(
-                            class_name=self._model.names[cls_id],
-                            confidence=conf,
-                            bbox_xywh=(
-                                int(x0 + bx1),
-                                int(y0 + by1),
-                                int(bx2 - bx1),
-                                int(by2 - by1),
-                            ),
-                            frame_seq=frame.seq,
-                            captured_wall_time=wall,
-                        )
+                if box.conf < self._config.yolo_confidence_threshold:
+                    dropped_conf += 1
+                    continue
+                detections.append(
+                    Detection(
+                        class_name=self._predictor.names[box.cls_id],
+                        confidence=box.conf,
+                        bbox_xywh=(
+                            int(x0 + box.x1),
+                            int(y0 + box.y1),
+                            int(box.x2 - box.x1),
+                            int(box.y2 - box.y1),
+                        ),
+                        frame_seq=frame.seq,
+                        captured_wall_time=wall,
                     )
+                )
             sp.context.update(dropped_class=dropped_class, dropped_conf=dropped_conf)
             if not detections:
                 sp.skip("yolo_empty")
