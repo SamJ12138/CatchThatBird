@@ -52,7 +52,11 @@ def make_video(
     if not writer.isOpened():
         raise RuntimeError(f"cv2.VideoWriter could not open {out}")
 
-    rng = np.random.default_rng(0)
+    # cv2.randn is ~10x faster than numpy's Gaussian generator; seeded, so the
+    # clip is the same on every run.
+    cv2.setRNGSeed(0)
+    jitter = np.empty((height, width, 3), dtype=np.int16)
+    background16 = np.full((height, width, 3), 128, dtype=np.int16)
     background = np.full((height, width, 3), 128, dtype=np.uint8)
     axes = (14, 9)  # ellipse half-axes: ~400 px area, above motion_min_area=200
     margin = axes[0] + 4
@@ -66,10 +70,11 @@ def make_video(
         cx = int(rx + margin + u * (rw - 2 * margin))
         cy = int(ry + rh / 2 + (rh / 4) * math.sin(2 * math.pi * 2 * t))
 
-        frame = background.copy()
         if noise > 0:
-            jitter = rng.normal(0, noise, frame.shape)
-            frame = np.clip(frame.astype(np.float32) + jitter, 0, 255).astype(np.uint8)
+            cv2.randn(jitter, 0, noise)
+            frame = np.clip(background16 + jitter, 0, 255).astype(np.uint8)
+        else:
+            frame = background.copy()
         cv2.ellipse(frame, (cx, cy), axes, 0, 0, 360, (40, 40, 40), -1, cv2.LINE_AA)
         writer.write(frame)
 

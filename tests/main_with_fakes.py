@@ -6,9 +6,11 @@
 capture   -> cv2.VideoCapture is replaced by FakeCapture(**capture)
 devices   -> main.list_devices returns this list (no device enumeration)
 predictor -> FakePredictor.from_spec(predictor) (always a fake: never YOLO)
+grabber   -> extra FrameGrabber keyword arguments (e.g. join_timeout_s)
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sys
@@ -31,6 +33,8 @@ def run() -> int:
     if "devices" in spec:
         devices = [tuple(d) for d in spec["devices"]]
         main.list_devices = lambda _obs: devices
+    if "grabber" in spec:
+        main.FrameGrabber = functools.partial(main.FrameGrabber, **spec["grabber"])
     predictor = FakePredictor.from_spec(spec.get("predictor", {}))
     return main.main(sys.argv[1:], predictor=predictor)
 

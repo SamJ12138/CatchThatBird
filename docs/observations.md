@@ -44,7 +44,7 @@ F2. **The detection cadence drifts, as predicted, but only slightly here.**
    - Excluding startup (F3), the steady-state loss was 24 of 570 frames (≈4%) at 720p and 21 of 596 (≈3.5%) at 1080p with the ROI.
    - YOLO ran 17 and 18 times in about 18 s after warm-up, so ≈0.95 Hz rather than 1 Hz.
    - Headless skips rendering. With `imshow` on a 1080p window, the drop will be larger. That was not measured.
-   - **Status:** deferred: inherent to the latest-frame-slot design (by intent). `--no-pace` gives lossless, deterministic runs for tests
+   - **Status:** deferred: inherent to the latest-frame-slot design (by intent). `--no-pace` gives lossless, deterministic runs for tests; since phase 3 batch A its consumer waits on the grabber's publish instead of 5 ms idle ticks (integration test 2.96 s → 0.47 s)
 F3. **Frames are dropped at startup for as long as detector init takes.** The grabber starts before `roi_load` and `detector_init`.
    - Run `401cd60f`: a cold YOLO load took 987 ms. The first frame reaching MOG2 was seq 31, so frames 2–30 were never processed, and warm-up completed at seq 90 rather than seq 60.
    - Run `a38671d5`: a warm load took 103 ms, and the first frame processed was seq 5.
@@ -53,9 +53,21 @@ F3. **Frames are dropped at startup for as long as detector init takes.** The gr
 F4. **YOLO's first call is cold.** It took 275 ms, against a steady p50 of ≈60–65 ms and p95 ≈100–112 ms on CPU for a ≈130×120 crop.
    - **Status:** deferred: not in the brief; a dummy inference in `YoloPredictor.load()` would move the cost to startup
 F5. **The warm-up is off by one.** `frame_count < motion_warmup_frames` skips 59 frames, not 60 (detector.py:159). This is harmless.
-   - **Status:** fixed in batch 1 `1513b40` (`<` → `<=`; with the default 60/30 config the first gated frame is now 90, not 60)
+   - **Status:** fixed in batch 1 `1513b40` (`<` → `<=`; with the default 60/30 config the first gated frame became 90, not 60). Phase 3 batch A (commit "fix: flush open visit on shutdown, cadence alignment, deterministic timing, relative paths") counts the cadence from the end of warm-up: first gated frame 61, then 91, 121
 F6. **YOLO never labelled the synthetic blob a bird** (`detection_map` skip `yolo_empty` ×17 / ×18). This was expected, so the persistence path was not exercised because no detection existed. It has not been built yet anyway.
    - **Status:** n/a (expected). Persistence (Phase 3 `EventLogger`, batch 4 `d12b264`) is exercised with a fake predictor: synth video + fake birds on frames 90/120/150/400 → exactly 2 events
+
+## Pre-publication findings (phase 3)
+
+Found while preparing the repository for publication. Numbered P1–P5 so they cannot be confused with `#N` or `FN` above.
+
+| # | Where | What happened | Status |
+|---|---|---|---|
+| P1 | `main.run_preview` / `EventLogger` | Open visits were written only when the `with` block unwound. Ctrl-C did that, but SIGTERM (POSIX) and Ctrl-Break (Windows) killed the process without it, so the visit in progress was lost. And a Ctrl-C that landed inside `EventLogger.handle()` could interrupt a visit half-open: crop written, full frame not written, visit never registered | fixed in phase 3 batch A: `shutdown_signals()` turns SIGINT / SIGTERM / SIGBREAK into `Shutdown` and holds it while a frame is detected and persisted. Only a hard kill loses an open visit (`docs/events-schema.md`) |
+| P2 | `Detector.process` cadence | `frame_count % N` ignored warm-up, so the first gated frame after a 60-frame warm-up was 90, not 61 | fixed in phase 3 batch A: `(frame_count - warmup - 1) % N == 0` |
+| P3 | tests | Reconnect, pacing and startup-order tests waited in real time (up to 2 s each; suite 37 s) | fixed in phase 3 batch A: injected `clock` / `sleep`, `FakeClock` (instant and lockstep); a session guard fails any test over 5 s and any real `time.sleep` over 100 ms. Suite 11 s |
+| P4 | `EventLogger._display_path` | Snapshot paths were relative to the project root, or absolute when the configured dir was absolute. So `events.jsonl` could not be moved | fixed in phase 3 batch A: relative to `snapshots_dir`'s parent (`snapshots/<name>.jpg`). New `--data-root` flag |
+| P5 | `scripts/failure_report.py` | No tests | fixed in phase 3 batch A: golden-table test on a 20-line fixture |
 
 ## Implementation notes (deviations from the brief)
 

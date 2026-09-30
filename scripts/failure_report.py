@@ -2,6 +2,7 @@
 
     python scripts/failure_report.py                 # every logs/*.jsonl
     python scripts/failure_report.py --latest        # newest log only
+    python scripts/failure_report.py --log-dir DIR   # another log directory
     python scripts/failure_report.py logs/run_ab12cd34.jsonl [more.jsonl ...]
 
 Prints:
@@ -69,13 +70,15 @@ def load(paths: list[Path]) -> tuple[list[dict], int]:
     return records, bad
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Failure report for CatchThatBird run logs")
-    p.add_argument("paths", nargs="*", type=Path, help="log files (default: logs/*.jsonl)")
-    p.add_argument("--latest", action="store_true", help="only the newest logs/*.jsonl")
-    args = p.parse_args()
+    p.add_argument("paths", nargs="*", type=Path, help="log files (default: <log-dir>/*.jsonl)")
+    p.add_argument("--latest", action="store_true", help="only the newest <log-dir>/*.jsonl")
+    p.add_argument("--log-dir", type=Path, default=ROOT / "logs",
+                   help="directory searched when no paths are given (default: logs/)")
+    args = p.parse_args(argv)
 
-    paths = args.paths or sorted((ROOT / "logs").glob("*.jsonl"), key=lambda q: q.stat().st_mtime)
+    paths = args.paths or sorted(args.log_dir.glob("*.jsonl"), key=lambda q: q.stat().st_mtime)
     if args.latest and paths:
         paths = paths[-1:]
     if not paths:

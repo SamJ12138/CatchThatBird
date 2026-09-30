@@ -97,8 +97,8 @@ def test_snapshots_are_the_padded_crop_and_the_full_frame(tmp_path, obs) -> None
     el.close()
 
     (ev,) = events(el)
-    crop_path = tmp_path / ev["snapshot_crop"]
-    full_path = tmp_path / ev["snapshot_full"]
+    crop_path = el.snapshots_dir.parent / ev["snapshot_crop"]
+    full_path = el.snapshots_dir.parent / ev["snapshot_full"]
     assert crop_path.parent == el.snapshots_dir and full_path.parent == el.snapshots_dir
     assert "20260930T140506.789" in crop_path.name and "seq000090" in crop_path.name
     assert cv2.imread(str(crop_path)).shape == (40, 50, 3)
@@ -274,8 +274,28 @@ def test_relative_paths_resolve_against_project_root_not_cwd(tmp_path, obs, monk
     assert el.events_path == project / "data" / "events.jsonl"
     assert el.events_path.exists()
     (ev,) = events(el)
-    assert ev["snapshot_crop"].startswith("data/snapshots/")
+    assert ev["snapshot_crop"].startswith("snapshots/")
     assert list(elsewhere.iterdir()) == []
+
+
+def test_snapshot_paths_are_relative_to_the_snapshots_dir_parent(tmp_path, obs) -> None:
+    """Stored as "snapshots/<name>" even when the configured dir is absolute, so
+    a data directory can be moved or copied to another machine as a whole."""
+    el = make_logger(tmp_path, obs)             # absolute: <tmp>/data/snapshots
+    f = frame(90, T0)
+    el.handle(f, [det(f)])
+    el.close()
+
+    (ev,) = events(el)
+    for key in ("snapshot_crop", "snapshot_full"):
+        assert ev[key].startswith("snapshots/") and "\\" not in ev[key]
+        assert not Path(ev[key]).is_absolute()
+        assert (tmp_path / "data" / ev[key]).is_file()
+
+
+def test_data_root_flag_defaults_to_the_project_root() -> None:
+    assert main.parse_args([]).data_root == ROOT
+    assert main.parse_args(["--data-root", "x"]).data_root == Path("x")
 
 
 def test_default_root_is_the_project_directory(obs, tmp_path) -> None:
@@ -296,26 +316,31 @@ def test_manual_snapshot_path_is_under_snapshots_dir(tmp_path, obs) -> None:
 # ---------------------------------------------------------------- integration
 
 def test_integration_two_events_from_synth_video(synth_video_15s, tmp_path, fake_predictor) -> None:
-    """Fake bird on frames 90, 120, 150 (same box) and 400 (different box)."""
+    """Fake bird on frames 91, 121, 151 (same box) and 401 (different box).
+    The stock config's relative paths resolve against --data-root."""
     box_a, box_b = (300, 150, 30, 20), (100, 60, 30, 20)
-    fake = fake_predictor({90: [box_a], 120: [box_a], 150: [box_a], 400: [box_b]})
+    fake = fake_predictor({91: [box_a], 121: [box_a], 151: [box_a], 401: [box_b]})
     data = tmp_path / "data"
-    # N=10 so frame 400 is a gated frame (with N=30 the gates are 90, 120, ... 390, 420).
-    cfg = write_test_config(tmp_path, **{"process_every_n_frames: 30": "process_every_n_frames: 10"})
+    # N=10: the gates are 61, 71, ... 391, 401 (warm-up 60, cadence counted from its end).
+    cfg = tmp_path / "relative.yaml"
+    cfg.write_text((ROOT / "config.yaml").read_text(encoding="utf-8").replace(
+        "process_every_n_frames: 30", "process_every_n_frames: 10"), encoding="utf-8")
 
     code = main.main(["--source", str(synth_video_15s), "--headless", "--no-pace",
-                      "--config", str(cfg), "--log-dir", str(tmp_path / "logs"),
+                      "--config", str(cfg), "--data-root", str(tmp_path),
+                      "--log-dir", str(tmp_path / "logs"),
                       "--roi-file", str(tmp_path / "no_roi.json")], predictor=fake)
 
     assert code == 0
     evs = read_log(data / "events.jsonl")
     assert len(evs) == 2
     first, second = sorted(evs, key=lambda e: e["frame_seq"])
-    assert (first["frame_seq"], first["visit_frames"], first["bbox_xywh"]) == (90, 3, list(box_a))
-    assert (second["frame_seq"], second["visit_frames"], second["bbox_xywh"]) == (400, 1, list(box_b))
+    assert (first["frame_seq"], first["visit_frames"], first["bbox_xywh"]) == (91, 3, list(box_a))
+    assert (second["frame_seq"], second["visit_frames"], second["bbox_xywh"]) == (401, 1, list(box_b))
     for ev in evs:
         assert set(ev) == EVENT_KEYS
-        assert Path(ev["snapshot_crop"]).exists() and Path(ev["snapshot_full"]).exists()
+        assert ev["snapshot_crop"].startswith("snapshots/")
+        assert (data / ev["snapshot_crop"]).exists() and (data / ev["snapshot_full"]).exists()
     (log,) = (tmp_path / "logs").glob("run_*.jsonl")
     persist = [l for l in read_log(log) if l["stage"] == "persist"]
     assert [l["event"] for l in persist].count("success") == 2

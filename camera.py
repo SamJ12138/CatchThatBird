@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -98,10 +98,17 @@ class FrameGrabber:
 
     Camera only: after `reconnect_after_s` of consecutive failed reads the
     capture is released and reopened, waiting backoff_delay(k) before attempt
-    k; the schedule restarts after the next good frame."""
+    k; the schedule restarts after the next good frame.
+
+    `clock` (default time.monotonic) and `sleep` (default time.sleep) are the
+    only time sources for pacing, the stall timer and the backoff, so tests
+    can run the real policy on a fake clock. Long waits are cut into
+    STOP_POLL_S slices with a stop() check between them."""
 
     RECONNECT_AFTER_S = 2.0
     JOIN_TIMEOUT_S = 2.0
+    STOP_POLL_S = 0.1   # longest single sleep during a backoff wait
+    RETRY_READ_S = 0.05
 
     def __init__(
         self,
@@ -116,7 +123,13 @@ class FrameGrabber:
         reconnect_after_s: float = RECONNECT_AFTER_S,
         backoff_s: tuple[float, ...] = BACKOFF_S,
         join_timeout_s: float = JOIN_TIMEOUT_S,
+        clock: Optional[Callable[[], float]] = None,
+        sleep: Optional[Callable[[float], None]] = None,
     ) -> None:
+        # Resolved here, not as default arguments, so a patched time.sleep
+        # (the test suite's real-sleep guard) is seen.
+        self._clock = clock if clock is not None else time.monotonic
+        self._sleep = sleep if sleep is not None else time.sleep
         self._device_index = device_index
         self._width = width
         self._height = height
@@ -133,6 +146,7 @@ class FrameGrabber:
         self._cap: Optional[cv2.VideoCapture] = None
         self._latest: Optional[Frame] = None
         self._lock = threading.Lock()
+        self._published = threading.Condition(self._lock)  # new frame, end of file, or death
         self._acked = threading.Condition(threading.Lock())
         self._acked_seq = 0
         self._error: Optional[BaseException] = None
@@ -231,7 +245,7 @@ class FrameGrabber:
 
     def _run(self) -> None:
         assert self._cap is not None
-        next_due = time.monotonic()
+        next_due = self._clock()
         stalled_since: Optional[float] = None
         try:
             while not self._stop_event.is_set():
@@ -239,7 +253,7 @@ class FrameGrabber:
                     return  # stopped while waiting to reopen
                 t0 = time.perf_counter()
                 ok, image = self._cap.read()
-                captured_at = time.monotonic()
+                captured_at = self._clock()
                 captured_wall_time = time.time()
                 read_ms = (time.perf_counter() - t0) * 1000.0
                 if not ok or image is None:
@@ -253,6 +267,8 @@ class FrameGrabber:
                                      "frames_captured": self._frames_captured},
                         )
                         self._finished.set()
+                        with self._published:
+                            self._published.notify_all()
                         return
                     self._read_failures += 1
                     self._read_counter.record("fail", read_ms)
@@ -276,7 +292,7 @@ class FrameGrabber:
                         self._release_for_reconnect(captured_at - stalled_since)
                         stalled_since = None
                         continue
-                    time.sleep(0.05)
+                    self._sleep(self.RETRY_READ_S)
                     continue
                 stalled_since = None
                 self._reopen_attempt = 0
@@ -284,15 +300,16 @@ class FrameGrabber:
                 self._frames_captured += 1
                 frame = Frame(image=image, captured_at=captured_at, seq=self._seq,
                               captured_wall_time=captured_wall_time)
-                with self._lock:
+                with self._published:
                     self._latest = frame
+                    self._published.notify_all()
                 self._read_counter.record("success", read_ms, frame_seq=self._seq)
                 if self._source is not None and self._pace:
                     # Deliver file frames at the file's rate, as a camera would.
                     next_due += self._frame_interval
-                    delay = next_due - time.monotonic()
+                    delay = next_due - self._clock()
                     if delay > 0:
-                        time.sleep(delay)
+                        self._sleep(delay)
                 elif self._source is not None:
                     # Unpaced: hand frames over one at a time, never overwrite.
                     with self._acked:
@@ -303,6 +320,8 @@ class FrameGrabber:
             # The thread still dies; `error` lets the consumer notice instead
             # of waiting forever for a frame that will never come.
             self._error = e
+            with self._published:
+                self._published.notify_all()
             self._obs.emit(
                 "capture_read", "fail", frame_seq=self._seq, error_type="unknown",
                 error_message=describe(e), context={"thread_died": True},
@@ -327,7 +346,7 @@ class FrameGrabber:
             delay = backoff_delay(self._reopen_attempt, self._backoff_s)
             self._reopen_attempt += 1
             logger.info(f"Reopening camera in {delay:g}s (attempt {self._reopen_attempt})")
-            if self._stop_event.wait(delay):
+            if self._wait(delay):
                 sp.skip("stopped", context={"attempts": attempts})
                 return False
             attempts += 1
@@ -339,6 +358,17 @@ class FrameGrabber:
             logger.info(f"Camera reconnected after {attempts} attempt(s)")
             sp.success({"attempts": attempts})
             return True
+
+    def _wait(self, seconds: float) -> bool:
+        """Wait `seconds` on the injected clock, in STOP_POLL_S slices.
+        Returns True as soon as stop() has been called."""
+        end = self._clock() + seconds
+        while not self._stop_event.is_set():
+            remaining = end - self._clock()
+            if remaining <= 0:
+                return False
+            self._sleep(min(remaining, self.STOP_POLL_S))
+        return True
 
     @property
     def finished(self) -> bool:
@@ -356,6 +386,18 @@ class FrameGrabber:
         with self._acked:
             self._acked_seq = max(self._acked_seq, seq)
             self._acked.notify_all()
+
+    def wait_for_frame_after(self, seq: int, timeout: float) -> None:
+        """Block until a frame newer than `seq` is published, the source ends,
+        or the capture thread dies; at most `timeout` real seconds. The
+        consumer side of the unpaced hand-off (pace=False), where the next
+        frame is only a decode away and a fixed idle sleep would dominate."""
+        with self._published:
+            self._published.wait_for(
+                lambda: (self._latest is not None and self._latest.seq > seq)
+                or self._finished.is_set() or self._error is not None,
+                timeout,
+            )
 
     def read_latest(self) -> Optional[Frame]:
         """Peek the latest frame. Returns None until the first frame arrives."""

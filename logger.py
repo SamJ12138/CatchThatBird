@@ -11,7 +11,14 @@ visit-close order; sort by `ts` to get visit-open order.
 Snapshots (the padded predictor crop, plus the full frame if enabled) are
 written when the visit opens. On startup, image files in `snapshots_dir`
 older than `retention_days` are deleted; events.jsonl is never truncated.
-All relative paths resolve against the project root, not the CWD.
+Relative config paths resolve against `root` (main.py's --data-root, default
+the project root), never the CWD. Snapshot paths in events.jsonl are stored
+relative to snapshots_dir's parent ("snapshots/<name>.jpg"), so a data
+directory can be moved as a whole.
+
+Open visits are written by close(), which main.py reaches on a normal exit,
+an error, Ctrl-C / SIGINT, SIGTERM and Ctrl-Break. Only a hard kill (SIGKILL,
+TerminateProcess, power loss) loses them. Schema: docs/events-schema.md.
 """
 from __future__ import annotations
 
@@ -283,9 +290,7 @@ class EventLogger:
         )
 
     def _display_path(self, path: Optional[Path]) -> Optional[str]:
+        """Path relative to snapshots_dir's parent ("snapshots/<name>"), POSIX slashes."""
         if path is None:
             return None
-        try:
-            return path.relative_to(self._root).as_posix()
-        except ValueError:
-            return str(path)
+        return path.relative_to(self.snapshots_dir.parent).as_posix()

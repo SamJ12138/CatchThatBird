@@ -8,19 +8,28 @@ from camera import Frame, FrameGrabber
 from config_schema import DetectionConfig
 from detector import Detector
 from tests.conftest import frame_with_block, grey_frame, read_log
+from tests.fakes import FakeClock
 
 
 def test_first_frame_the_detector_processes_has_seq_at_most_2(synth_video_2s, tmp_path,
                                                                 fake_predictor) -> None:
     """Paced like a camera, with a 1 s model load: frames must not be lost
-    while the model loads (before: the first processed seq was ~31)."""
-    slow_loading = fake_predictor(load_delay=1.0)
+    while the model loads (before: the first processed seq was ~31).
+
+    Lockstep fake clock: the load takes 1 s of fake time, and the paced
+    grabber only moves when the main loop idles. Had capture started before
+    the load, the grabber would owe 30 frames when the clock jumped and would
+    publish them back to back, so the first frame processed would be ~31."""
+    clock = FakeClock(lockstep=True)
+    slow_loading = fake_predictor(load_delay=1.0, sleep=clock.sleep)
     log_dir = tmp_path / "logs"
 
     code = main.main(["--source", str(synth_video_2s), "--headless", "--log-dir", str(log_dir),
-                      "--roi-file", str(tmp_path / "no_roi.json")], predictor=slow_loading)
+                      "--roi-file", str(tmp_path / "no_roi.json")], predictor=slow_loading,
+                     clock=clock.monotonic, sleep=clock.sleep)
 
     assert code == 0
+    assert clock.slept[0] == 1.0                 # the load ran first, in fake time
     (log,) = log_dir.glob("run_*.jsonl")
     summaries = [l for l in read_log(log) if l["stage"] == "mog2_apply" and l["context"].get("summary")]
     assert summaries[0]["context"]["seq_range"][0] <= 2
@@ -47,7 +56,8 @@ def test_frame_carries_capture_wall_time(synth_video_2s, obs) -> None:
 
 
 def test_detection_copies_wall_time_from_frame(obs, fake_predictor) -> None:
-    slow = fake_predictor(crop_boxes=[(0, 0, 5, 5)], predict_delay=0.2)
+    clock = FakeClock()  # "inference" takes 0.2 s of fake time; time.time() is untouched
+    slow = fake_predictor(crop_boxes=[(0, 0, 5, 5)], predict_delay=0.2, sleep=clock.sleep)
     det = Detector(DetectionConfig(motion_warmup_frames=2, process_every_n_frames=1,
                                    motion_min_area=50), obs=obs, predictor=slow)
     images = [grey_frame(), grey_frame(), frame_with_block(60, 60)]

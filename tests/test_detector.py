@@ -104,6 +104,27 @@ def test_warmup_skips_exactly_motion_warmup_frames(obs, fake_predictor) -> None:
     assert [l["frame_seq"] for l in complete] == [6]
 
 
+@pytest.mark.parametrize(
+    "warmup, n, expected",
+    [(60, 30, [61, 91, 121]), (5, 4, [6, 10, 14]), (0, 30, [1, 31, 61])],
+    ids=["default-60-30", "5-4", "no-warmup"],
+)
+def test_cadence_counts_from_the_end_of_warmup(obs, fake_predictor, warmup, n, expected) -> None:
+    """The first frame after warm-up is gated, then every Nth:
+    (frame_count - warmup - 1) % N == 0. Before: frame_count % N == 0, so the
+    default config (60/30) waited until frame 90."""
+    det = Detector(dcfg(motion_warmup_frames=warmup, process_every_n_frames=n),
+                   obs=obs, predictor=fake_predictor())
+
+    run_frames(det, [grey_frame()] * 130)
+
+    obs.close()
+    gated = [l["frame_seq"] for l in read_log(obs.path)
+             if l["stage"] == "morph_contour" and l["event"] == "start"]  # one span per gated frame
+    assert gated[:3] == expected
+    assert gated == list(range(warmup + 1, 131, n))
+
+
 def test_no_detection_during_warmup(obs, fake_predictor) -> None:
     fake = fake_predictor(crop_boxes=[(0, 0, 5, 5)])
     det = Detector(dcfg(motion_warmup_frames=3), obs=obs, predictor=fake)

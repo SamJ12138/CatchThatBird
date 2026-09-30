@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
 import cv2
 import numpy as np
@@ -20,7 +23,7 @@ from camera import (
     find_pocket_index,
     list_devices,
 )
-from config_schema import AppConfig, load_config
+from config_schema import PROJECT_ROOT, AppConfig, load_config
 from obs import ObsLogger, Span, describe, new_run_id
 
 if TYPE_CHECKING:
@@ -41,6 +44,76 @@ class ExitError(Exception):
         super().__init__(message)
         self.code = code
         self.error_type = error_type
+
+
+# Signals that stop a run cleanly: the capture is closed and open visits are
+# flushed to events.jsonl. SIGBREAK is Ctrl-Break on Windows. There,
+# SIGTERM from another process (os.kill, taskkill /F) is TerminateProcess,
+# a hard kill that no handler sees.
+SHUTDOWN_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGBREAK") if hasattr(signal, name)
+)
+
+
+class Shutdown(KeyboardInterrupt):
+    """Raised in the main thread by a shutdown signal. A KeyboardInterrupt,
+    so every existing Ctrl-C path (spans, `with` blocks) handles it."""
+
+    def __init__(self, signal_name: str) -> None:
+        super().__init__(signal_name)
+        self.signal_name = signal_name
+
+
+class ShutdownGuard:
+    """What a shutdown signal does during one run. Outside `deferred()` it
+    raises Shutdown at once. Inside, it is held until the block ends, so a
+    frame's detection and persistence finish as a unit (a signal landing in
+    the middle of EventLogger.handle() would otherwise lose that visit). A
+    second signal is ignored, so the flush on the way out is not cut short."""
+
+    def __init__(self) -> None:
+        self.fired: Optional[str] = None
+        self._deferring = False
+        self._pending: Optional[str] = None
+
+    def handle(self, signum: int, _frame: object) -> None:
+        if self.fired is not None:
+            return
+        self.fired = signal.Signals(signum).name
+        if self._deferring:
+            self._pending = self.fired
+            return
+        raise Shutdown(self.fired)
+
+    @contextmanager
+    def deferred(self) -> Iterator[None]:
+        self._deferring = True
+        try:
+            yield
+        finally:
+            self._deferring = False
+        if self._pending is not None:
+            raise Shutdown(self._pending)
+
+
+@contextmanager
+def shutdown_signals() -> Iterator[ShutdownGuard]:
+    """Route SHUTDOWN_SIGNALS to a ShutdownGuard for the duration of the
+    block, then restore the previous handlers. Outside the main thread
+    (where handlers cannot be set) the guard is inert."""
+    guard = ShutdownGuard()
+    if threading.current_thread() is not threading.main_thread():
+        yield guard
+        return
+    previous = {sig: signal.signal(sig, guard.handle) for sig in SHUTDOWN_SIGNALS}
+    try:
+        yield guard
+    finally:
+        for sig, old in previous.items():
+            if old is not None:  # None: installed outside Python, cannot be restored
+                signal.signal(sig, old)
+
+
 ROI_SELECT_WINDOW = "Select ROI -- drag a rectangle around the car. Enter/Space = confirm, C = whole frame"
 
 
@@ -201,18 +274,21 @@ def _put_text(img, text: str, org: tuple[int, int], color: tuple[int, int, int])
 
 
 def _wait_for_first_frame(
-    grabber: FrameGrabber, timeout: float = 5.0
+    grabber: FrameGrabber,
+    timeout: float = 5.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Optional[Frame]:
     """None if nothing arrives within `timeout`, or as soon as the source ends
     or the capture thread dies without producing a frame."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = clock() + timeout
+    while clock() < deadline:
         frame = grabber.read_latest()
         if frame is not None:
             return frame
         if grabber.finished or grabber.error is not None:
             return grabber.read_latest()
-        time.sleep(0.02)
+        sleep(0.02)
     return None
 
 
@@ -379,10 +455,21 @@ def run_preview(
     roi_file: Path = ROI_FILE,
     predictor: Optional[Predictor] = None,
     first_frame_timeout: float = 5.0,
+    data_root: Path = PROJECT_ROOT,
+    clock: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+    shutdown: Optional[ShutdownGuard] = None,
 ) -> None:
+    """`clock` / `sleep` (default time.monotonic / time.sleep) drive the
+    grabber's pacing, the first-frame wait and the headless idle loop.
+    `shutdown` holds a signal back while a frame is detected and persisted."""
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
     from detector import Detection, Detector
     from logger import EventLogger
+
+    clock = clock if clock is not None else time.monotonic
+    sleep = sleep if sleep is not None else time.sleep
+    shutdown = shutdown if shutdown is not None else ShutdownGuard()
 
     recent_detections: list[tuple[float, Detection]] = []
     detection_overlay_ttl = 1.5  # seconds to keep a box visible after detection
@@ -394,6 +481,7 @@ def run_preview(
     events = EventLogger(
         config.logging, config.storage, obs.run_id, obs=obs,
         dedupe_within_seconds=config.detection.dedupe_within_seconds,
+        root=data_root,
     )
 
     with events, FrameGrabber(
@@ -404,9 +492,11 @@ def run_preview(
         obs=obs,
         source=source,
         pace=pace,
+        clock=clock,
+        sleep=sleep,
     ) as grabber:
         sp = obs.span("first_frame_wait", context={"timeout_s": first_frame_timeout})
-        first_frame = _wait_for_first_frame(grabber, timeout=first_frame_timeout)
+        first_frame = _wait_for_first_frame(grabber, first_frame_timeout, clock, sleep)
         if first_frame is None:
             if grabber.error is not None:
                 reason = f"capture thread died before the first frame: {describe(grabber.error)}"
@@ -429,7 +519,7 @@ def run_preview(
             cv2.resizeWindow(WINDOW_NAME, 1280, 720)
 
         last_seq = 0  # 0 == none seen yet; producer seqs start at 1
-        last_new_frame_time = time.monotonic()
+        last_new_frame_time = clock()
         display_fps_ema = 0.0
         latency_ms_ema = 0.0
         ema_alpha = 0.1
@@ -457,7 +547,10 @@ def run_preview(
                     raise ExitError(f"Capture thread died: {describe(grabber.error)}",
                                     error_type="unknown")
                 if headless:
-                    time.sleep(0.005)
+                    if pace:
+                        sleep(0.005)
+                    else:  # unpaced file: the grabber is decoding the next frame now
+                        grabber.wait_for_frame_after(last_seq, timeout=0.05)
                     continue
                 # No fresh producer frame -- skip redraw, just service window events.
                 # This is the main fix for skipped: we stop wasting copy+imshow
@@ -468,7 +561,7 @@ def run_preview(
                 continue
 
             # ---- New-frame path: full pipeline ----
-            now = time.monotonic()
+            now = clock()  # same clock as frame.captured_at
             latency_ms = (now - frame.captured_at) * 1000.0
 
             if last_seq > 0:
@@ -489,17 +582,18 @@ def run_preview(
             )
             last_seq = frame.seq
 
-            detections = detector.process(frame)
-            for det in detections:
-                logger.info(
-                    f"{det.class_name.upper()} detected "
-                    f"(conf={det.confidence:.2f}, "
-                    f"bbox={det.bbox_xywh[0]},{det.bbox_xywh[1]},"
-                    f"{det.bbox_xywh[2]},{det.bbox_xywh[3]})"
-                )
-                recent_detections.append((now, det))
-            events.handle(frame, detections)
-            grabber.ack(frame.seq)
+            with shutdown.deferred():
+                detections = detector.process(frame)
+                for det in detections:
+                    logger.info(
+                        f"{det.class_name.upper()} detected "
+                        f"(conf={det.confidence:.2f}, "
+                        f"bbox={det.bbox_xywh[0]},{det.bbox_xywh[1]},"
+                        f"{det.bbox_xywh[2]},{det.bbox_xywh[3]})"
+                    )
+                    recent_detections.append((now, det))
+                events.handle(frame, detections)
+                grabber.ack(frame.seq)
 
             recent_detections = [
                 (t, d) for t, d in recent_detections
@@ -645,11 +739,26 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         metavar="SECONDS",
         help="Exit 1 if the source produces no frame within this time (default: 5).",
     )
+    p.add_argument(
+        "--data-root",
+        type=Path,
+        default=PROJECT_ROOT,
+        metavar="DIR",
+        help="Directory that relative logging.events_file / logging.snapshots_dir "
+             "paths in the config resolve against (default: the project root).",
+    )
     return p.parse_args(argv)
 
 
-def main(argv: Optional[list[str]] = None, *, predictor: Optional[Predictor] = None) -> int:
-    """`argv` and `predictor` are seams for tests (a fake predictor avoids YOLO)."""
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    predictor: Optional[Predictor] = None,
+    clock: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+) -> int:
+    """`argv`, `predictor`, `clock` and `sleep` are seams for tests (a fake
+    predictor avoids YOLO; a fake clock avoids real waiting)."""
     configure_logger()
     args = parse_args(argv)
 
@@ -658,7 +767,7 @@ def main(argv: Optional[list[str]] = None, *, predictor: Optional[Predictor] = N
     try:
         with obs.span("run", context={"argv": sys.argv[1:] if argv is None else argv}) as run:
             try:
-                code = _main(args, obs, run, predictor)
+                code = _main(args, obs, run, predictor, clock, sleep)
             except ExitError as e:
                 logger.error(str(e))
                 run.fail(e.error_type, str(e), {"exit_code": e.code})
@@ -696,6 +805,8 @@ def _main(
     obs: ObsLogger,
     run: Span,
     predictor: Optional[Predictor] = None,
+    clock: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
 ) -> int:
     with obs.span("config_load", error_type="parse", context={"path": str(args.config)}) as sp:
         try:
@@ -731,17 +842,22 @@ def _main(
             "(device listing and Pocket 3 checklist skipped)"
         )
     try:
-        run_preview(
-            config, force_select_roi=args.select_roi, obs=obs,
-            source=args.source, headless=args.headless, pace=not args.no_pace,
-            roi_file=args.roi_file, predictor=predictor,
-            first_frame_timeout=args.first_frame_timeout,
-        )
+        with shutdown_signals() as shutdown:
+            run_preview(
+                config, force_select_roi=args.select_roi, obs=obs,
+                source=args.source, headless=args.headless, pace=not args.no_pace,
+                roi_file=args.roi_file, predictor=predictor,
+                first_frame_timeout=args.first_frame_timeout,
+                data_root=args.data_root, clock=clock, sleep=sleep, shutdown=shutdown,
+            )
     except ExitError:
         raise  # one-line message + exit code, handled in main()
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-        run.skip("keyboard_interrupt", context={"exit_code": 0})
+    except KeyboardInterrupt as e:
+        # run_preview's `with` blocks have already closed the capture and
+        # flushed open visits by the time the exception gets here.
+        name = e.signal_name if isinstance(e, Shutdown) else "SIGINT"
+        logger.info(f"Stopped by {name}; open visits written")
+        run.skip("keyboard_interrupt", context={"exit_code": 0, "signal": name})
     except Exception as e:
         logger.exception("Preview crashed")
         run.fail("unknown", describe(e), {"exit_code": 1})

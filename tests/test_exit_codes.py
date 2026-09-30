@@ -56,8 +56,8 @@ def error_lines(stderr: str) -> list[str]:
 
 def test_no_first_frame_within_timeout_exits_1(tmp_path) -> None:
     proc, lines = run_proc(
-        WRAPPER, ["--source", "fake.mp4", "--headless", "--no-pace", "--first-frame-timeout", "1"],
-        tmp_path, {"capture": {"block": True}},
+        WRAPPER, ["--source", "fake.mp4", "--headless", "--no-pace", "--first-frame-timeout", "0.1"],
+        tmp_path, {"capture": {"block": True}, "grabber": {"join_timeout_s": 0.1}},
     )
     assert proc.returncode == 1, proc.stderr[-1500:]
     assert "Traceback" not in proc.stderr

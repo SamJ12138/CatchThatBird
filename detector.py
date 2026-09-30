@@ -268,7 +268,10 @@ class Detector:
             )
             self._warmup_logged = True
 
-        if self._frame_count % self._config.process_every_n_frames != 0:
+        # Cadence counts from the end of warm-up: the first frame after it is
+        # gated, then every Nth (warm-up 60, N 30 -> 61, 91, 121 ...).
+        since_warmup = self._frame_count - self._config.motion_warmup_frames - 1
+        if since_warmup % self._config.process_every_n_frames != 0:
             self._gate_counter.record("skip", frame_seq=seq, reason="cadence")
             return []
         self._gate_counter.record("success", frame_seq=seq)

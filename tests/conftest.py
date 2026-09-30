@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,12 +19,60 @@ from tests.fakes import FakePredictor
 ROOT = Path(__file__).resolve().parent.parent  # pyproject.toml puts it on sys.path
 
 
+WALL_TIME_LIMIT_S = 5.0   # per test, setup + call + teardown (the `slow` test is exempt)
+SLEEP_LIMIT_S = 0.1       # longest real time.sleep() a single call may make
+
+# nodeid -> {"setup": s, "call": s, "teardown": s}, filled as reports arrive.
+_durations: dict[str, dict[str, float]] = defaultdict(dict)
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if "slow" not in report.keywords:
+        _durations[report.nodeid][report.when] = report.duration
+
+
+def over_budget(durations: dict[str, dict[str, float]],
+                      limit: float) -> list[tuple[str, float]]:
+    """(nodeid, total seconds) for every test whose phases add up to more than `limit`."""
+    return sorted((nodeid, round(sum(phases.values()), 2))
+                  for nodeid, phases in durations.items() if sum(phases.values()) > limit)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # Unit tests must never import ultralytics in-process; the one slow test
     # runs the real model in a subprocess.
     if "ultralytics" in sys.modules:
         print("\nERROR: ultralytics was imported in the test process", file=sys.stderr)
         session.exitstatus = 1
+    # Session-level wall-time guard: timing tests run on fake clocks, so a
+    # test that takes this long is waiting on real time somewhere.
+    for nodeid, total in over_budget(_durations, WALL_TIME_LIMIT_S):
+        print(f"\nERROR: {nodeid} took {total:.2f}s (limit {WALL_TIME_LIMIT_S:g}s)",
+              file=sys.stderr)
+        session.exitstatus = 1
+
+
+def guard_sleep(real_sleep: Callable[[float], None], limit: float,
+                violations: list[float]) -> Callable[[float], None]:
+    """time.sleep stand-in that records every call longer than `limit`."""
+    def sleep(seconds: float) -> None:
+        if seconds > limit:
+            violations.append(seconds)
+        real_sleep(seconds)
+    return sleep
+
+
+@pytest.fixture(autouse=True)
+def no_long_real_sleep(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Fails a test (any thread) that calls time.sleep() for more than
+    SLEEP_LIMIT_S. Delays under test go through a FakeClock instead."""
+    if request.node.get_closest_marker("slow"):
+        yield
+        return
+    violations: list[float] = []
+    monkeypatch.setattr(time, "sleep", guard_sleep(time.sleep, SLEEP_LIMIT_S, violations))
+    yield
+    assert not violations, f"real time.sleep() longer than {SLEEP_LIMIT_S}s: {violations}"
 
 
 # ---------------------------------------------------------------- config isolation

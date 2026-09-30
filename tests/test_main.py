@@ -7,6 +7,7 @@ from pathlib import Path
 
 import main
 from tests.conftest import read_log
+from tests.fakes import FakeClock
 
 
 def run(video: Path, tmp_path: Path, predictor, *extra: str) -> tuple[int, list[dict]]:
@@ -59,16 +60,19 @@ def test_headless_same_aspect_roi_is_rescaled(synth_video_2s, tmp_path, fake_pre
 def test_paced_loop_waits_for_new_frames_and_exits_at_eof(synth_video_2s, tmp_path,
                                                           fake_predictor) -> None:
     """The loop's 'no new frame yet' path (next to the deleted dead branch,
-    obs #16) still spins until frames arrive and exits 0 at end of file."""
+    obs #16) still spins until frames arrive and exits 0 at end of file.
+    Lockstep fake clock: the paced grabber advances only while the loop idles."""
+    clock = FakeClock(lockstep=True)
     log_dir = tmp_path / "logs"
     code = main.main(["--source", str(synth_video_2s), "--headless", "--log-dir", str(log_dir),
-                      "--roi-file", str(tmp_path / "no_roi.json")], predictor=fake_predictor())
+                      "--roi-file", str(tmp_path / "no_roi.json")], predictor=fake_predictor(),
+                     clock=clock.monotonic, sleep=clock.sleep)
     (log,) = log_dir.glob("run_*.jsonl")
     lines = read_log(log)
 
     assert code == 0
     assert summary_total(lines, "capture_read") == 60
-    assert summary_total(lines, "mog2_apply") >= 50  # paced: the loop keeps up
+    assert summary_total(lines, "mog2_apply") == 60  # the loop waited for every frame
 
 
 def test_blob_reaches_the_predictor(synth_video_2s, tmp_path, fake_predictor) -> None:

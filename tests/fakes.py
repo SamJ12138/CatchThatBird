@@ -1,13 +1,83 @@
 """Test doubles. Nothing here touches a camera or imports ultralytics."""
 from __future__ import annotations
 
+import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import cv2
 import numpy as np
 
 BIRD = 14  # COCO class id for "bird"
+
+
+class FakeClock:
+    """Deterministic time for FrameGrabber / main.run_preview (their `clock`
+    and `sleep` arguments). No real time passes.
+
+    monotonic() returns fake seconds. sleep(s):
+    - instant (default): advances fake time by s and returns at once.
+    - lockstep=True: a two-actor discrete-event clock. Only the driver thread
+      (the one that created the clock) moves time, and only while the other
+      thread is idle, i.e. blocked in its own sleep() with its wake-up still
+      in the future. Any other thread's sleep blocks until the driver has
+      moved time past its wake-up point. A paced producer thread then runs
+      only while the consumer idles and never falls behind or races ahead,
+      so frame hand-off is deterministic. If no other thread is asleep (none
+      started yet, or it has exited), the driver waits at most `settle` real
+      seconds before moving time anyway. A blocked sleep that sees no
+      progress for `stall_timeout` real seconds raises instead of hanging.
+    `slept` records every sleep request (any thread).
+    """
+
+    def __init__(self, start: float = 1000.0, *, lockstep: bool = False,
+                 settle: float = 0.05, stall_timeout: float = 5.0) -> None:
+        self._now = start
+        self._cond = threading.Condition()
+        self._lockstep = lockstep
+        self._driver = threading.current_thread()
+        self._settle = settle
+        self._stall_timeout = stall_timeout
+        self._sleepers: dict[threading.Thread, float] = {}  # thread -> wake-up time
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        with self._cond:
+            return self._now
+
+    def advance(self, seconds: float) -> None:
+        with self._cond:
+            self._now += max(0.0, seconds)
+            self._cond.notify_all()
+
+    def sleep(self, seconds: float) -> None:
+        seconds = max(0.0, seconds)
+        with self._cond:
+            self.slept.append(seconds)
+        if not self._lockstep:
+            self.advance(seconds)
+            time.sleep(0)  # yield the GIL so other threads see the new time
+            return
+        me = threading.current_thread()
+        with self._cond:
+            if me is self._driver:
+                # Wait until the other thread is idle: asleep, and not already due.
+                self._cond.wait_for(
+                    lambda: self._sleepers and all(w > self._now for w in self._sleepers.values()),
+                    timeout=self._settle,
+                )
+                self._now += seconds
+                self._cond.notify_all()
+                return
+            wake = self._now + seconds
+            self._sleepers[me] = wake
+            self._cond.notify_all()
+            try:
+                if not self._cond.wait_for(lambda: self._now >= wake, timeout=self._stall_timeout):
+                    raise RuntimeError("FakeClock: no thread advanced time (lockstep stall)")
+            finally:
+                del self._sleepers[me]
+                self._cond.notify_all()
 
 
 class FakeDevice:
@@ -16,23 +86,31 @@ class FakeDevice:
 
     fail_reads: the next N read() calls (on any capture) return False
     fail_opens: the next N open attempts fail on every backend
+    fail_reopens: the N open attempts after the first one fail
+    clock: timestamps open attempts and releases (default time.monotonic)
     """
 
-    def __init__(self, *, fail_reads: int = 0, fail_opens: int = 0,
-                 block_reads: bool = False) -> None:
+    def __init__(self, *, fail_reads: int = 0, fail_opens: int = 0, fail_reopens: int = 0,
+                 block_reads: bool = False,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.fail_reads = fail_reads
         self.fail_opens = fail_opens
+        self.fail_reopens = fail_reopens
         self.block_reads = block_reads
-        self.open_attempts: list[float] = []  # monotonic time of each attempt
+        self.clock = clock
+        self.open_attempts: list[float] = []  # clock time of each attempt
         self.captures: list["FakeCapture"] = []
         self._attempt_fails = False
 
     def __call__(self, index: Any = 0, backend: Optional[int] = None) -> "FakeCapture":
         if backend in (None, cv2.CAP_DSHOW):  # first backend tried = a new attempt
-            self.open_attempts.append(time.monotonic())
+            self.open_attempts.append(self.clock())
             self._attempt_fails = self.fail_opens > 0
             if self._attempt_fails:
                 self.fail_opens -= 1
+            elif len(self.open_attempts) > 1 and self.fail_reopens > 0:
+                self._attempt_fails = True
+                self.fail_reopens -= 1
         cap = FakeCapture(device=self, block=self.block_reads)
         if self._attempt_fails:
             cap.released = True  # isOpened() -> False
@@ -45,7 +123,7 @@ class FakeCapture:
 
     frames: successful reads before read() returns False (None = endless)
     raise_after: read number raise_after + 1 raises RuntimeError
-    block: read() never returns (a hung driver)
+    block: read() never returns (a hung driver; `in_read` is set while inside)
     device: a FakeDevice whose fail_reads budget this capture consumes
     A dark block moves across a grey frame so MOG2 sees motion.
     """
@@ -70,6 +148,8 @@ class FakeCapture:
         self.device = device
         self.reads = 0
         self.released = False
+        self.released_at: Optional[float] = None
+        self.in_read = threading.Event()
 
     def isOpened(self) -> bool:
         return not self.released
@@ -87,7 +167,8 @@ class FakeCapture:
 
     def read(self):
         if self.block:
-            time.sleep(3600)
+            self.in_read.set()
+            threading.Event().wait()  # hung driver: never returns (daemon thread)
         self.reads += 1
         if self.device is not None and self.device.fail_reads > 0:
             self.device.fail_reads -= 1
@@ -103,6 +184,8 @@ class FakeCapture:
 
     def release(self) -> None:
         self.released = True
+        if self.device is not None:
+            self.released_at = self.device.clock()
 
 
 class FakePredictor:
@@ -125,6 +208,7 @@ class FakePredictor:
         cls_id: int = BIRD,
         load_delay: float = 0.0,
         predict_delay: float = 0.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.boxes_by_seq = {
             int(k): [tuple(b) for b in v] for k, v in (boxes_by_seq or {}).items()
@@ -134,6 +218,7 @@ class FakePredictor:
         self.cls_id = cls_id
         self.load_delay = load_delay
         self.predict_delay = predict_delay
+        self.sleep = sleep  # pass FakeClock.sleep to "load" in fake time
         self.names = {0: "person", BIRD: "bird"}
         self.device = "fake"
         self.last_meta: dict[str, Any] = {}
@@ -151,14 +236,15 @@ class FakePredictor:
         )
 
     def load(self) -> None:
-        time.sleep(self.load_delay)
+        if self.load_delay:
+            self.sleep(self.load_delay)
         self.loaded = True
 
     def predict(self, crop, *, conf, classes, frame_seq, origin):
         from detector import RawBox
 
         if self.predict_delay:
-            time.sleep(self.predict_delay)
+            self.sleep(self.predict_delay)
         self.calls.append(
             {"frame_seq": frame_seq, "origin": tuple(origin), "crop_shape": crop.shape[:2]}
         )

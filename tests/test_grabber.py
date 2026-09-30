@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from camera import FrameGrabber
+from tests.fakes import FakeClock
 
 
 def consume_all(grabber: FrameGrabber, timeout: float = 20.0) -> list[int]:
@@ -30,9 +33,31 @@ def test_no_pace_delivers_every_frame_in_order(synth_video_2s, obs) -> None:
     assert seen == list(range(1, 61))
 
 
-def test_paced_source_runs_at_file_rate(synth_video_2s, obs) -> None:
-    grabber = FrameGrabber(0, 640, 360, 30, obs=obs, source=str(synth_video_2s))
+def test_wait_for_frame_after_returns_on_the_next_frame(synth_video_2s, obs) -> None:
+    grabber = FrameGrabber(0, 640, 360, 30, obs=obs, source=str(synth_video_2s), pace=False)
+    with grabber:
+        grabber.wait_for_frame_after(0, timeout=5)
+        first = grabber.read_latest()
+        assert first is not None and first.seq == 1
+        grabber.ack(1)
+        t0 = time.monotonic()
+        grabber.wait_for_frame_after(1, timeout=5)
+        assert grabber.read_latest().seq == 2
+        assert time.monotonic() - t0 < 1.0     # woken by the publish, not the timeout
+        seen = consume_all(grabber)
+    assert seen[-1] == 60
     t0 = time.monotonic()
+    grabber.wait_for_frame_after(60, timeout=5)  # finished: returns at once
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_paced_source_runs_at_file_rate(synth_video_2s, obs) -> None:
+    clock = FakeClock()
+    t0 = clock.monotonic()
+    grabber = FrameGrabber(0, 640, 360, 30, obs=obs, source=str(synth_video_2s),
+                           clock=clock.monotonic, sleep=clock.sleep)
     with grabber:
         consume_all(grabber)
-    assert time.monotonic() - t0 >= 1.8  # 60 frames at 30 fps
+    # 60 frames at 30 fps, in fake time: one frame interval after each frame.
+    assert clock.monotonic() - t0 == pytest.approx(2.0, abs=1 / 30)
+    assert all(s <= 1 / 30 + 1e-9 for s in clock.slept)
