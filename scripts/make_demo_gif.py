@@ -7,8 +7,12 @@ preview side by side, around the first visit.
 
 Source clip: data/samples/demo.mp4 if it exists, else synth_bird.mp4
 (made with scripts/make_synth_video.py if missing). Without --annotated and
---events, main.py runs on the clip (--headless --no-pace --annotate-out) in
-a temporary directory, so data/events.jsonl and data/snapshots are untouched.
+--events, main.py runs on the clip (--headless --annotate-out) in a
+temporary directory, so data/events.jsonl and data/snapshots are untouched.
+The run is paced at the clip's frame rate, like a camera, so the HUD shows
+live numbers. A paced run skips frames while YOLO is busy; for those, both
+panels show the last processed frame (the annotated video's .frames.json
+lists which ones were processed), as the live preview would.
 
 The GIF covers 2 s before the first visit's `ts` to 2 s after its
 `last_seen`, read from events.jsonl. The clip position of `ts` is
@@ -23,6 +27,7 @@ and keeps the first result of 5 MB or less (else the smallest one up to 8 MB).
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import subprocess
@@ -110,6 +115,27 @@ def plan(seg: Segment, fps: float, max_seconds: float = MAX_SECONDS) -> tuple[li
     return frames, factor
 
 
+def annotated_seqs(annotated: Path) -> Optional[list[int]]:
+    """Frame seqs of the annotated video's frames, from main.py's sidecar
+    (None without one: then frame i is source frame i)."""
+    sidecar = annotated.with_name(annotated.name + ".frames.json")
+    if not sidecar.exists():
+        return None
+    return json.loads(sidecar.read_text(encoding="utf-8"))["frame_seqs"]
+
+
+def align(indices: list[int], seqs: Optional[list[int]]) -> list[tuple[int, int]]:
+    """(source frame index, annotated frame index) to show for each wanted
+    source frame index: the last processed frame at or before it."""
+    if seqs is None:
+        return [(i, i) for i in indices]
+    out = []
+    for i in indices:
+        k = max(0, bisect.bisect_right(seqs, i + 1) - 1)   # seq = index + 1
+        out.append((seqs[k] - 1, k))
+    return out
+
+
 def read_frames(path: Path, indices: list[int], width: int) -> dict[int, np.ndarray]:
     """Frames at `indices` (ascending, repeats allowed), resized to `width`."""
     cap = cv2.VideoCapture(str(path))
@@ -178,13 +204,13 @@ def encode_gif(frames_dir: Path, fps: int, out: Path) -> None:
 def render(source: Path, annotated: Path, frames: list[OutFrame], clip_fps: float,
            width: int, fps: int, out: Path, work: Path) -> tuple[int, int]:
     """Write the GIF; returns its (width, height)."""
-    indices = [round(f.t * clip_fps) for f in frames]
-    left = read_frames(source, indices, width)
-    right = read_frames(annotated, indices, width)
+    pairs = align([round(f.t * clip_fps) for f in frames], annotated_seqs(annotated))
+    left = read_frames(source, [s for s, _ in pairs], width)
+    right = read_frames(annotated, [a for _, a in pairs], width)
     frames_dir = work / f"frames_{width}_{fps}"
     frames_dir.mkdir()
-    for n, (f, i) in enumerate(zip(frames, indices)):
-        image = compose(left[i], right[i], f.label)
+    for n, (f, (s, a)) in enumerate(zip(frames, pairs)):
+        image = compose(left[s], right[a], f.label)
         cv2.imwrite(str(frames_dir / f"f{n:05d}.png"), image)
     encode_gif(frames_dir, fps, out)
     return image.shape[1], image.shape[0]
@@ -193,7 +219,7 @@ def render(source: Path, annotated: Path, frames: list[OutFrame], clip_fps: floa
 def pipeline_command(source: Path, work: Path) -> list[str]:
     """main.py on `source`, writing the annotated video, events and logs under `work`."""
     return [sys.executable, str(ROOT / "main.py"), "--source", str(source), "--headless",
-            "--no-pace", "--yes", "--annotate-out", str(work / "annotated.mp4"),
+            "--yes", "--annotate-out", str(work / "annotated.mp4"),
             "--data-root", str(work), "--log-dir", str(work / "logs")]
 
 
@@ -230,7 +256,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--source", type=Path, default=None,
                    help="input clip (default: data/samples/demo.mp4, else synth_bird.mp4)")
     p.add_argument("--annotated", type=Path, default=None,
-                   help="annotated video of a --no-pace run on --source (default: run main.py)")
+                   help="annotated video of a run on --source, with its .frames.json "
+                        "(default: run main.py)")
     p.add_argument("--events", type=Path, default=None,
                    help="events.jsonl of that run (required with --annotated)")
     p.add_argument("--out", type=Path, default=ROOT / "docs" / "demo.gif")

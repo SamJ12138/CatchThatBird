@@ -83,11 +83,28 @@ def test_a_real_clip_in_data_samples_replaces_the_synthetic_one(tmp_path) -> Non
 def test_pipeline_command_renders_the_annotated_video(tmp_path) -> None:
     cmd = demo.pipeline_command(Path("clip.mp4"), tmp_path)
     assert cmd[1].endswith("main.py")
-    for flag in ("--headless", "--no-pace", "--yes"):
+    for flag in ("--headless", "--yes"):
         assert flag in cmd
+    assert "--no-pace" not in cmd      # paced like a camera: the HUD shows live numbers
     assert cmd[cmd.index("--source") + 1] == "clip.mp4"
     assert cmd[cmd.index("--annotate-out") + 1] == str(tmp_path / "annotated.mp4")
     assert cmd[cmd.index("--data-root") + 1] == str(tmp_path)   # events.jsonl stays in tmp
+
+
+def test_skipped_frames_show_the_last_processed_frame_on_both_sides() -> None:
+    # Paced run: seqs 3 and 6 were never processed (the pipeline was busy).
+    seqs = [1, 2, 4, 5, 7]
+    # source frame index wanted -> (source index, annotated index) shown
+    assert demo.align([0, 1, 2, 3, 5, 6], seqs) == [(0, 0), (1, 1), (1, 1), (3, 2), (4, 3), (6, 4)]
+    assert demo.align([0, 1, 2], None) == [(0, 0), (1, 1), (2, 2)]   # no sidecar: one to one
+
+
+def test_sidecar_of_the_annotated_video_is_read(tmp_path) -> None:
+    video = tmp_path / "annotated.mp4"
+    assert demo.annotated_seqs(video) is None
+    (tmp_path / "annotated.mp4.frames.json").write_text(
+        json.dumps({"fps": 30.0, "frame_seqs": [1, 2, 4]}), encoding="utf-8")
+    assert demo.annotated_seqs(video) == [1, 2, 4]
 
 
 def test_fixture_to_gif_under_the_limit(tmp_path, capsys) -> None:

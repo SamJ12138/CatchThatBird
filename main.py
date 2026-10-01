@@ -310,11 +310,14 @@ def draw_overlays(
 
 class AnnotationWriter:
     """--annotate-out: the preview frames of a run, written to a video file
-    (MJPG for .avi, mp4v otherwise) at the source's frame rate."""
+    (MJPG for .avi, mp4v otherwise) at the source's frame rate. A paced run
+    skips frames while the pipeline is busy, so `<path>.frames.json` lists
+    the frame seq of every frame written: {"fps": ..., "frame_seqs": [...]}."""
 
     def __init__(self, path: Path, fps: float, size: tuple[int, int]) -> None:
         self.path = path
-        self.frames = 0
+        self.fps = fps
+        self.frame_seqs: list[int] = []
         path.parent.mkdir(parents=True, exist_ok=True)
         fourcc = "MJPG" if path.suffix.lower() == ".avi" else "mp4v"
         self._writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc), fps, size)
@@ -322,16 +325,22 @@ class AnnotationWriter:
             raise ExitError(f"Cannot write the annotated video {path} (cv2.VideoWriter "
                             f"could not open it with {fourcc})")
 
-    def write(self, image: np.ndarray) -> None:
+    @property
+    def sidecar(self) -> Path:
+        return self.path.with_name(self.path.name + ".frames.json")
+
+    def write(self, image: np.ndarray, frame_seq: int) -> None:
         self._writer.write(image)
-        self.frames += 1
+        self.frame_seqs.append(frame_seq)
 
     def __enter__(self) -> "AnnotationWriter":
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self._writer.release()
-        logger.info(f"Annotated video: {self.frames} frames -> {self.path}")
+        self.sidecar.write_text(json.dumps({"fps": self.fps, "frame_seqs": self.frame_seqs}),
+                                encoding="utf-8")
+        logger.info(f"Annotated video: {len(self.frame_seqs)} frames -> {self.path}")
 
 
 def _wait_for_first_frame(
@@ -657,7 +666,9 @@ def run_preview(
                     skipped_total += gap
             dt = now - last_new_frame_time
             last_new_frame_time = now
-            if dt > 0:
+            # The first frame was already waiting when the loop started: its dt
+            # is not a frame interval, so the fps average starts at the second.
+            if dt > 0 and last_seq > 0:
                 instant_fps = 1.0 / dt
                 display_fps_ema = (
                     instant_fps if display_fps_ema == 0
@@ -706,7 +717,7 @@ def run_preview(
                  f"dets={dstats['detections_total']}", (200, 200, 200)),
             ])
             if annotator is not None:
-                annotator.write(display)
+                annotator.write(display, frame.seq)
             if headless:
                 render_counter.record(
                     "success", (time.perf_counter() - render_t0) * 1000.0, frame_seq=frame.seq
@@ -820,7 +831,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         metavar="PATH",
         help="With --source: also write every processed frame, with the preview's "
              "overlays (ROI, detections, HUD), to this video file (.mp4, or .avi "
-             "for MJPG). Works with --headless.",
+             "for MJPG), and their frame numbers to PATH.frames.json. Works with "
+             "--headless.",
     )
     return p.parse_args(argv)
 

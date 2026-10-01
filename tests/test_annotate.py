@@ -68,6 +68,10 @@ def test_annotate_out_writes_every_processed_frame(synth_video_2s, tmp_path, fak
     render = [l for l in lines if l["stage"] == "render" and l["context"].get("summary")]
     assert sum(l["context"]["records"] for l in render) == 60
     assert all(l["context"].get("reasons", {}).get("headless", 0) == 0 for l in render)
+    # A paced run skips frames when the pipeline falls behind, so the frame seq
+    # of every written frame goes in a sidecar next to the video.
+    sidecar = json.loads((tmp_path / "annotated.mp4.frames.json").read_text(encoding="utf-8"))
+    assert sidecar == {"fps": 30.0, "frame_seqs": list(range(1, 61))}
 
 
 def test_annotated_frames_carry_the_preview_overlays(synth_video_2s, tmp_path, monkeypatch,
@@ -132,3 +136,34 @@ def test_annotate_out_needs_a_source(tmp_path, monkeypatch) -> None:
 
     assert code == 1
     assert not (tmp_path / "a.mp4").exists()
+
+
+def test_hud_fps_reads_the_paced_frame_rate_from_the_first_frame(synth_video_2s, tmp_path,
+                                                                 monkeypatch, fake_predictor) -> None:
+    """The first frame was already waiting when the loop started; its "frame
+    interval" is not one and must not seed the fps average (it showed 140+ fps
+    for the first 2 s of a paced 30 fps run)."""
+    import re
+
+    from tests.fakes import FakeClock
+
+    clock = FakeClock(lockstep=True)
+    ticks = iter(range(10**9))
+    huds: list[str] = []
+    draw = main.draw_overlays
+    monkeypatch.setattr(main, "draw_overlays",
+                        lambda image, roi, dets, hud: huds.append(hud[0][0]) or draw(image, roi, dets, hud))
+
+    code = main.main(["--source", str(synth_video_2s), "--headless", "--log-dir", str(tmp_path / "logs"),
+                      "--roi-file", str(roi_file(tmp_path)), "--annotate-out", str(tmp_path / "a.mp4")],
+                     predictor=fake_predictor(),
+                     clock=lambda: clock.monotonic() + next(ticks) * 1e-6,  # time moves a hair per read
+                     sleep=clock.sleep)
+
+    assert code == 0
+    fps = [float(re.search(r"fps=\s*([\d.]+)", h).group(1)) for h in huds]
+    assert len(fps) == 60
+    # No runaway seed: one jittered interval at most (frame 1 was picked up
+    # after the first-frame wait), then the 30 fps the file is paced at.
+    assert max(fps) < 60, fps[:5]
+    assert all(28 < f < 33 for f in fps[30:]), fps[30:]   # 5 ms idle-poll granularity

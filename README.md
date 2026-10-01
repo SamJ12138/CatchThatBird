@@ -273,7 +273,7 @@ Command-line flags (`python main.py --help`):
 | `--roi-file PATH` | ROI file (default `data/roi.json`) |
 | `--log-dir DIR` | Where the run log goes (default `logs/`) |
 | `--first-frame-timeout SECONDS` | Exit 1 if no frame arrives in time (default 5) |
-| `--annotate-out PATH` | With `--source`: also write every processed frame, with the preview's overlays, to a video file (`.mp4`, or `.avi` for MJPG). Works with `--headless`. Not available for the camera, which is never recorded |
+| `--annotate-out PATH` | With `--source`: also write every processed frame, with the preview's overlays, to a video file (`.mp4`, or `.avi` for MJPG), and their frame numbers to `PATH.frames.json`. Works with `--headless`. Not available for the camera, which is never recorded |
 
 Exit codes: 0 for a normal end, including Ctrl-C and SIGTERM; 1 for an error, with a one-line message; 2 if stdin closed at the checklist (use `--yes`).
 
@@ -325,7 +325,7 @@ python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
 
-`make_demo_gif.py` runs `main.py --annotate-out` on `data/samples/demo.mp4` if that file exists, else on `synth_bird.mp4`, in a temporary directory (your `data/events.jsonl` is not touched). It cuts from 2 s before the first visit's `ts` to 2 s after its `last_seen`, and puts the input and the annotated frames side by side. If that is longer than 12 s, the perch plays faster, with a label such as `2x`. ffmpeg comes from `imageio-ffmpeg` in `requirements-dev.txt`.
+`make_demo_gif.py` runs `main.py --annotate-out` on `data/samples/demo.mp4` if that file exists, else on `synth_bird.mp4`, in a temporary directory (your `data/events.jsonl` is not touched). The run is paced at the clip's frame rate like a camera, so the HUD shows live numbers (about 30 fps); it takes as long as the clip. It cuts from 2 s before the first visit's `ts` to 2 s after its `last_seen`, and puts the input and the annotated frames side by side. If that is longer than 12 s, the perch plays faster, with a label such as `2x`. ffmpeg comes from `imageio-ffmpeg` in `requirements-dev.txt`.
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
