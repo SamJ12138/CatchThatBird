@@ -107,6 +107,18 @@ def test_quickstart_shows_a_real_detection_from_the_synthetic_clip(readme: str) 
     assert "Your own camera" in quick
 
 
+def test_demo_gif_sits_under_the_title_and_badge(readme: str) -> None:
+    intro = [l for l in readme.split("\n## ", 1)[0].splitlines() if l.strip()]
+    assert intro[0] == "# CatchThatBird" and intro[1].startswith("[![CI]")
+    assert intro[2].startswith("![") and intro[2].endswith("(docs/demo.gif)")
+    caption = intro[3]
+    assert caption.startswith("*") and caption.endswith("*")
+    assert "synthetic" in caption and "public-domain" in caption
+    gif = ROOT / "docs" / "demo.gif"
+    assert gif.read_bytes()[:6] == b"GIF89a" and gif.stat().st_size <= 8 * 1024 * 1024
+    assert "python scripts/make_demo_gif.py" in section(readme, "Development")
+
+
 def test_no_fixture_chart_on_the_front_page(readme: str) -> None:
     assert "docs/visits.png" not in readme.replace("-> docs/visits.png", "")
     assert "python scripts/plot_visits.py" in section(readme, "Output")

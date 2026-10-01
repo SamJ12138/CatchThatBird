@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml/badge.svg)](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml)
 
+![The input clip and the pipeline's annotated preview side by side: a house sparrow lands in the watched region, is boxed as a bird while it perches, and flies off](docs/demo.gif)
+
+*Rendered from a pipeline run, not screen-recorded: the quickstart's synthetic clip (a noisy grey background with a public-domain house sparrow photo composited in) on the left, the preview's overlays on the right. The perch plays at 2x.*
+
 CatchThatBird keeps a passive log of birds visiting a parked car, seen through a webcam (a DJI Osmo Pocket 3 in webcam mode, in the author's setup). It writes one line per visit to `data/events.jsonl`, plus a snapshot of each bird, so visit times can be analysed later. It sends no alerts and records no video. Detection is two-stage so that a laptop CPU is enough. Cheap background subtraction (MOG2) watches a region around the car on every frame, and the YOLOv8n neural network runs only on a small crop around motion, about once a second.
 
 ## Quickstart
@@ -269,6 +273,7 @@ Command-line flags (`python main.py --help`):
 | `--roi-file PATH` | ROI file (default `data/roi.json`) |
 | `--log-dir DIR` | Where the run log goes (default `logs/`) |
 | `--first-frame-timeout SECONDS` | Exit 1 if no frame arrives in time (default 5) |
+| `--annotate-out PATH` | With `--source`: also write every processed frame, with the preview's overlays, to a video file (`.mp4`, or `.avi` for MJPG). Works with `--headless`. Not available for the camera, which is never recorded |
 
 Exit codes: 0 for a normal end, including Ctrl-C and SIGTERM; 1 for an error, with a one-line message; 2 if stdin closed at the checklist (use `--yes`).
 
@@ -317,7 +322,10 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -m "not slow"          # the fast suite: no camera, no YOLO
 python -m pytest                        # adds the one test that loads the real yolov8n.pt
 python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
+python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
+
+`make_demo_gif.py` runs `main.py --annotate-out` on `data/samples/demo.mp4` if that file exists, else on `synth_bird.mp4`, in a temporary directory (your `data/events.jsonl` is not touched). It cuts from 2 s before the first visit's `ts` to 2 s after its `last_seen`, and puts the input and the annotated frames side by side. If that is longer than 12 s, the perch plays faster, with a label such as `2x`. ffmpeg comes from `imageio-ffmpeg` in `requirements-dev.txt`.
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 

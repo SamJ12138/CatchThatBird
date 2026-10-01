@@ -444,6 +444,12 @@ class FrameGrabber:
         sp.success({"captured": self._frames_captured, "failures": self._read_failures})
 
     @property
+    def fps(self) -> float:
+        """Frame rate of the source: the file's own rate once it is open,
+        else the requested camera rate."""
+        return 1.0 / self._frame_interval
+
+    @property
     def stats(self) -> dict[str, int]:
         return {
             "captured": self._frames_captured,

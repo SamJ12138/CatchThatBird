@@ -6,7 +6,7 @@ import signal
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
@@ -27,7 +27,7 @@ from config_schema import PROJECT_ROOT, AppConfig, load_config
 from obs import ObsLogger, Span, describe, new_run_id
 
 if TYPE_CHECKING:
-    from detector import Predictor
+    from detector import Detection, Predictor
 
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.yaml"
@@ -273,6 +273,67 @@ def _put_text(img, text: str, org: tuple[int, int], color: tuple[int, int, int])
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1, cv2.LINE_AA)
 
 
+# Seconds of capture time a detection box stays drawn after its frame. Capture
+# time, not display time, so a --no-pace file run holds it as long as a live one.
+DETECTION_HOLD_S = 1.5
+
+
+def draw_overlays(
+    image: np.ndarray,
+    roi: Optional[tuple[int, int, int, int]],
+    detections: list[Detection],
+    hud: list[tuple[str, tuple[int, int, int]]],
+) -> np.ndarray:
+    """The preview frame: a copy of `image` with the ROI box, the held
+    detection boxes and the HUD lines. The preview window shows it and
+    --annotate-out writes it."""
+    display = image.copy()
+    if roi is not None:
+        rx, ry, rw, rh = roi
+        cv2.rectangle(display, (rx, ry), (rx + rw, ry + rh), (0, 165, 255), 2)
+        _put_text(display, "ROI", (rx + 8, ry + 24), (0, 165, 255))
+
+    for det in detections:
+        bx, by, bw, bh = det.bbox_xywh
+        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+        label = f"{det.class_name} {det.confidence:.2f}"
+        label_y = max(20, by - 8)
+        cv2.putText(display, label, (bx, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(display, label, (bx, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+
+    for i, (text, color) in enumerate(hud):
+        _put_text(display, text, (16, 36 + 28 * i), color)
+    return display
+
+
+class AnnotationWriter:
+    """--annotate-out: the preview frames of a run, written to a video file
+    (MJPG for .avi, mp4v otherwise) at the source's frame rate."""
+
+    def __init__(self, path: Path, fps: float, size: tuple[int, int]) -> None:
+        self.path = path
+        self.frames = 0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = "MJPG" if path.suffix.lower() == ".avi" else "mp4v"
+        self._writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc), fps, size)
+        if not self._writer.isOpened():
+            raise ExitError(f"Cannot write the annotated video {path} (cv2.VideoWriter "
+                            f"could not open it with {fourcc})")
+
+    def write(self, image: np.ndarray) -> None:
+        self._writer.write(image)
+        self.frames += 1
+
+    def __enter__(self) -> "AnnotationWriter":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._writer.release()
+        logger.info(f"Annotated video: {self.frames} frames -> {self.path}")
+
+
 def _wait_for_first_frame(
     grabber: FrameGrabber,
     timeout: float = 5.0,
@@ -475,20 +536,22 @@ def run_preview(
     clock: Optional[Callable[[], float]] = None,
     sleep: Optional[Callable[[float], None]] = None,
     shutdown: Optional[ShutdownGuard] = None,
+    annotate_out: Optional[Path] = None,
 ) -> None:
     """`clock` / `sleep` (default time.monotonic / time.sleep) drive the
     grabber's pacing, the first-frame wait and the headless idle loop.
-    `shutdown` holds a signal back while a frame is detected and persisted."""
+    `shutdown` holds a signal back while a frame is detected and persisted.
+    `annotate_out`: also write every processed frame, with the preview's
+    overlays, to this video file (headless or not)."""
     # Lazy import: pulling ultralytics costs ~1-3s, skip it for --list-devices.
-    from detector import Detection, Detector
+    from detector import Detector
     from logger import EventLogger
 
     clock = clock if clock is not None else time.monotonic
     sleep = sleep if sleep is not None else time.sleep
     shutdown = shutdown if shutdown is not None else ShutdownGuard()
 
-    recent_detections: list[tuple[float, Detection]] = []
-    detection_overlay_ttl = 1.5  # seconds to keep a box visible after detection
+    recent_detections: list[Detection] = []  # drawn until DETECTION_HOLD_S has passed
 
     # Load the model BEFORE capture starts so no frames are lost while it
     # loads; the ROI (which needs the first frame) is set afterwards.
@@ -513,7 +576,7 @@ def run_preview(
         pace=pace,
         clock=clock,
         sleep=sleep,
-    ) as grabber:
+    ) as grabber, ExitStack() as stack:
         sp = obs.span("first_frame_wait", context={"timeout_s": first_frame_timeout})
         first_frame = _wait_for_first_frame(grabber, first_frame_timeout, clock, sleep)
         if first_frame is None:
@@ -532,6 +595,11 @@ def run_preview(
             headless=headless, obs=obs,
         )
         detector.set_roi(roi)
+
+        annotator: Optional[AnnotationWriter] = None
+        if annotate_out is not None:
+            h, w = first_frame.image.shape[:2]
+            annotator = stack.enter_context(AnnotationWriter(annotate_out, grabber.fps, (w, h)))
 
         if not headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -612,62 +680,38 @@ def run_preview(
                         f"bbox={det.bbox_xywh[0]},{det.bbox_xywh[1]},"
                         f"{det.bbox_xywh[2]},{det.bbox_xywh[3]})"
                     )
-                    recent_detections.append((now, det))
+                    recent_detections.append(det)
                 events.handle(frame, detections)
                 grabber.ack(frame.seq)
 
             recent_detections = [
-                (t, d) for t, d in recent_detections
-                if now - t < detection_overlay_ttl
+                d for d in recent_detections
+                if frame.captured_wall_time - d.captured_wall_time < DETECTION_HOLD_S
             ]
 
-            if headless:
+            if headless and annotator is None:
                 render_counter.record("skip", frame_seq=frame.seq, reason="headless")
                 continue
 
             render_t0 = time.perf_counter()
-            display = frame.image.copy()
-
-            if detector.roi is not None:
-                rx, ry, rw, rh = detector.roi
-                cv2.rectangle(display, (rx, ry), (rx + rw, ry + rh),
-                              (0, 165, 255), 2)
-                _put_text(display, "ROI", (rx + 8, ry + 24), (0, 165, 255))
-
-            for _, det in recent_detections:
-                bx, by, bw, bh = det.bbox_xywh
-                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-                label = f"{det.class_name} {det.confidence:.2f}"
-                label_y = max(20, by - 8)
-                cv2.putText(display, label, (bx, label_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.putText(display, label, (bx, label_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-
-            _put_text(
-                display,
-                f"seq={frame.seq:>6}  fps={display_fps_ema:5.1f}  "
-                f"pipe_lat~{latency_ms_ema:5.1f} ms",
-                (16, 36),
-                (0, 255, 0),
-            )
             stats = grabber.stats
             dstats = detector.stats
-            _put_text(
-                display,
-                f"captured={stats['captured']}  skipped={skipped_total}  "
-                f"read_fail={stats['failures']}",
-                (16, 64),
-                (200, 200, 200),
-            )
-            _put_text(
-                display,
-                f"motion={dstats['motion_gates_opened']}  "
-                f"yolo={dstats['yolo_invocations']}  "
-                f"dets={dstats['detections_total']}",
-                (16, 92),
-                (200, 200, 200),
-            )
+            display = draw_overlays(frame.image, detector.roi, recent_detections, [
+                (f"seq={frame.seq:>6}  fps={display_fps_ema:5.1f}  "
+                 f"pipe_lat~{latency_ms_ema:5.1f} ms", (0, 255, 0)),
+                (f"captured={stats['captured']}  skipped={skipped_total}  "
+                 f"read_fail={stats['failures']}", (200, 200, 200)),
+                (f"motion={dstats['motion_gates_opened']}  "
+                 f"yolo={dstats['yolo_invocations']}  "
+                 f"dets={dstats['detections_total']}", (200, 200, 200)),
+            ])
+            if annotator is not None:
+                annotator.write(display)
+            if headless:
+                render_counter.record(
+                    "success", (time.perf_counter() - render_t0) * 1000.0, frame_seq=frame.seq
+                )
+                continue
 
             try:
                 cv2.imshow(WINDOW_NAME, display)
@@ -769,6 +813,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Directory that relative logging.events_file / logging.snapshots_dir "
              "paths in the config resolve against (default: the project root).",
     )
+    p.add_argument(
+        "--annotate-out",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="With --source: also write every processed frame, with the preview's "
+             "overlays (ROI, detections, HUD), to this video file (.mp4, or .avi "
+             "for MJPG). Works with --headless.",
+    )
     return p.parse_args(argv)
 
 
@@ -830,6 +883,9 @@ def _main(
     clock: Optional[Callable[[], float]] = None,
     sleep: Optional[Callable[[float], None]] = None,
 ) -> int:
+    if args.annotate_out is not None and args.source is None:
+        raise ExitError("--annotate-out needs --source: CatchThatBird records no video "
+                        "of the live camera")
     with obs.span("config_load", error_type="parse", context={"path": str(args.config)}) as sp:
         try:
             config = load_app_config(args.config)
@@ -871,6 +927,7 @@ def _main(
                 roi_file=args.roi_file, predictor=predictor,
                 first_frame_timeout=args.first_frame_timeout,
                 data_root=args.data_root, clock=clock, sleep=sleep, shutdown=shutdown,
+                annotate_out=args.annotate_out,
             )
     except ExitError:
         raise  # one-line message + exit code, handled in main()

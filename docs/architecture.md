@@ -26,6 +26,7 @@ This document covers the module graph, the threading model, the two-stage detect
 
    scripts/make_synth_video.py   synthetic clip for --source runs: a real bird photo, or a blob
    scripts/failure_report.py     summarises logs/run_<id>.jsonl (stdlib only)
+   scripts/make_demo_gif.py      docs/demo.gif from main.py --annotate-out and events.jsonl
    tests/fakes.py                FakeCapture, FakeDevice, FakePredictor, FakeClock
 ```
 
@@ -52,7 +53,8 @@ Two threads share one frame slot.
  lock; slot = frame; notify                    detector.process(frame)      \ held against
  camera: loop immediately                      events.handle(frame, dets)   / shutdown signals
  file, paced: sleep until the next frame is due grabber.ack(seq)
- file, --no-pace: wait for ack(seq)            draw HUD, imshow, waitKey (unless --headless)
+ file, --no-pace: wait for ack(seq)            draw HUD, imshow, waitKey (unless --headless);
+                                               --annotate-out: write the same image to a file
 ```
 
 - **Latest-frame slot, not a queue.** The producer overwrites the slot, so a slow consumer skips frames and never builds a backlog. Skipped frames are counted (`skipped_total` in the `render` summary).
