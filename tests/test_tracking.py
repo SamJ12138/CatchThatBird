@@ -149,10 +149,10 @@ def yolo_calls_per_seq(obs) -> dict[int, Counter]:
 def test_yolo_call_rate_with_and_without_an_open_visit(tmp_path, obs) -> None:
     """Gated frames every 5th (3, 8, 13 ...). A distractor moves along the top
     all the time; the fake never calls it a bird. Its first rejected motion
-    crop (frame 3) opens the one re-check window (frames 4-33, R2,
-    tests/test_recheck.py). After that: one motion crop per gated frame. A
-    still bird lands at frame 50. With its visit open: the motion crop plus
-    the track crop, never more than 2."""
+    crop (frame 3) opens the one re-check window (frames 4-33, re-checked on
+    every third; R2, tests/test_recheck.py). After that: one motion crop per
+    gated frame. A still bird lands at frame 50. With its visit open: the
+    motion crop plus the track crop, never more than 2."""
     bird = (200, 170, 30, 30)
     fake = FakePredictor(boxes(range(50, 91), bird), within_crop=True)
     images = []
@@ -167,7 +167,7 @@ def test_yolo_call_rate_with_and_without_an_open_visit(tmp_path, obs) -> None:
 
     gated = set(range(3, 91, 5))
     window = set(range(4, 34))
-    assert {s for s in calls if calls[s]["recheck"]} == window
+    assert {s for s in calls if calls[s]["recheck"]} == set(range(6, 34, 3))
     assert set(calls) <= gated | window                          # otherwise only on gated frames
     before = [s for s in gated if 33 < s < 53]
     after = [s for s in gated if s > 53]                         # visit opened on frame 53

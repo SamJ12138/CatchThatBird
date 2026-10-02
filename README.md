@@ -223,9 +223,9 @@ The design, the threading model and the measured costs are in [docs/architecture
  padded crop around the motion -> YOLOv8n, target classes only
    + for each open visit: padded crop around its last box -> YOLOv8n
      (every gated frame, motion or not, so a bird that sits still stays confirmed)
-   + if YOLO finds nothing in the motion crop: the same crop again on each of the
-     next 30 frames, kept out of the background model meanwhile, so a bird that was
-     blurred in flight is found as it lands, before it becomes background
+   + if YOLO finds nothing in the motion crop: the same crop again on every third
+     of the next 30 frames, kept out of the background model meanwhile, so a bird
+     that was blurred in flight is found as it lands, before it becomes background
         |
         v
  EventLogger: same bird as an open visit (IoU >= 0.3, or centre within 2x its size; within 10 s)?
@@ -238,7 +238,7 @@ The design, the threading model and the measured costs are in [docs/architecture
 
 - **One visit, the whole perch.** The bird arrived at about 3.0 s and left at 14.0 s. The visit opened at 3.03 s, every one of its 11 gated frames confirmed the bird (`visit_frames` 11), and `last_seen` was 10.7 s after `ts` (13.77 s into the clip). It was never split or lost while the bird sat still.
 - **YOLO rate.** Before the visit there was one gated frame, with no motion large enough, so no call. With the visit open, YOLO ran 25 times in 13.6 s, 1.84 calls/s: 2 per gated frame after the first, one on the track crop and one on the motion crop. While the bird perched, that motion was its bill, which sticks out of its box.
-- **A blurred arrival is re-checked.** In another run of the same clip, before the re-check existed (run_id `c2c24c8d`, with `--annotate-out`), the gated frames fell elsewhere: one on the bird in flight, blurred, and one a second after landing, when the still body had been absorbed into the background and only the wing moved. The visit opened at 5.93 s, 2.9 s late. Since `2cfe133`, the crop YOLO rejected is classified again on the following frames and kept out of the background model. With the gated frames forced onto the same frames, the visit now opens at 3.43 s (run_id `76e9f2c7`), where it opened at 5.97 s (run_id `49d65294`). Details: [docs/observations.md](docs/observations.md), "The R2 fix".
+- **A blurred arrival is re-checked.** In another run of the same clip, before the re-check existed (run_id `c2c24c8d`, with `--annotate-out`), the gated frames fell elsewhere: one on the bird in flight, blurred, and one a second after landing, when the still body had been absorbed into the background and only the wing moved. The visit opened at 5.93 s, 2.9 s late. Since `2cfe133`, the crop YOLO rejected is classified again on the following frames and kept out of the background model. With the gated frames forced onto the same frames, the visit now opens at 3.57 s (run_id `83ae1c57`), where it opened at 5.97 s (run_id `49d65294`). Details: [docs/observations.md](docs/observations.md), "The R2 fix".
 
 ## Configuration
 
@@ -263,7 +263,7 @@ All settings are in `config.yaml`. Unknown keys and wrong types stop the program
 | `detection.visit_center_distance` | `2.0` | ... or if its centre is within this many times max(width, height) of the last box's centre |
 | `detection.max_visit_seconds` | `600` | A visit this long is written with `"truncated": true`, and the next confirmation opens a new one |
 | `detection.recheck_window_frames` | `30` | When YOLO finds no bird in a gated frame's motion crop, it re-checks that crop on up to this many following frames (about 1 s), and the crop is kept out of the background model meanwhile. `0` turns the re-check off |
-| `detection.recheck_every_n_frames` | `1` | Within that window, YOLO runs on every Nth frame (`1`: every frame) |
+| `detection.recheck_every_n_frames` | `3` | Within that window, YOLO runs on every Nth frame. At `1` (every frame) a laptop CPU cannot keep up: 20 YOLO calls/s, one frame in three dropped. At `3` the loop keeps up, at 10 calls/s, and the visit opens about 0.1 s later |
 | `logging.events_file` | `data/events.jsonl` | Where visits are appended |
 | `logging.snapshots_dir` | `data/snapshots` | Where snapshots are written |
 | `logging.snapshot_format` | `jpeg` | `jpeg` or `png` |
@@ -335,7 +335,7 @@ python scripts/failure_report.py logs/run_<run_id>.jsonl
 ```
 python -m pip install -r requirements-dev.txt
 python -m pytest -m "not slow"          # the fast suite: no camera, no YOLO
-python -m pytest                        # adds the five tests that load the real yolov8n.pt
+python -m pytest                        # adds the six tests that load the real yolov8n.pt
 python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
@@ -352,7 +352,7 @@ python scripts/make_demo_gif.py --source data/samples/real/hummingbird_feeder.mp
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
-The `slow` marker covers five tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, and three runs on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it). Those must log a visit confirmed on at least 5 gated frames, and open it within 0.5 s of the bird's arrival: once with the gated frames forced onto the frames where the bird is blurred, and in three runs paced like a camera (about a minute). Everything else uses test doubles from `tests/fakes.py`:
+The `slow` marker covers six tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, and four on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it). Those must log a visit confirmed on at least 5 gated frames, and open it on the bird's arrival: within 0.5 s in three runs paced like a camera (about a minute), and, with the gated frames forced onto the frames where the bird is blurred, by 3.6 s with the default re-check and by 3.5 s with every frame re-checked. Everything else uses test doubles from `tests/fakes.py`:
 
 - **`FakePredictor`** stands in for YOLO. The detector reaches YOLO only through a small `Predictor` protocol (`load()`, `predict()`, `names`), so a test passes the fake in:
 
@@ -388,7 +388,7 @@ Known limitations:
 - **A hard kill loses at most the last 60 s of an open visit.** The visit itself is recovered on the next start from `data/open_visits.json`, with `"recovered": true`, but `last_seen` and `visit_frames` are as of the last checkpoint.
 - **Two birds close together can merge.** A detection joins an open visit if its centre is within 2x the visit's box size. That keeps a hopping bird in one visit, but two birds perched side by side count as one.
 - **Open visits cost YOLO time.** While a visit is open, each gated frame runs YOLO once per open visit, plus once for motion elsewhere. That continues for up to `dedupe_within_seconds` after the bird has left. Motion from a part of the bird outside its box (the hummingbird's bill on the real clip) counts as motion elsewhere, so a perched bird can cost 2 calls per gated frame.
-- **A re-check window costs YOLO time.** After a gated frame with motion that YOLO rejects, YOLO runs on that crop on each of the next 30 frames: about 20 calls/s for 1.5 s on a laptop CPU, during which the preview and the frame rate drop. Motion that goes on (a branch, a shadow) opens one window, not one per second; `detection.recheck_every_n_frames: 3` halves the rate, and `recheck_window_frames: 0` turns the re-check off.
+- **A re-check window costs YOLO time.** After a gated frame with motion that YOLO rejects, YOLO runs on that crop on every third of the next 30 frames: about 10 calls/s for a second on a laptop CPU, instead of 1. Motion that goes on (a branch, a shadow) opens one window, not one per second. `detection.recheck_every_n_frames: 1` finds the bird about 0.1 s sooner, at 20 calls/s and with one frame in three dropped during the window; `recheck_window_frames: 0` turns the re-check off.
 - **`ts` is the first frame on which YOLO found the bird.** The motion gate looks once a second, so that can be up to a second after the bird came into view, and longer if YOLO cannot make it out during the re-check window.
 - **Anything YOLO keeps calling a bird stays one long visit.** A still object that YOLO scores at or above the threshold (a decoy, say) is written as a truncated visit every `max_visit_seconds` (10 min by default), for as long as it stays.
 

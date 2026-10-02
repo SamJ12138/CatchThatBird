@@ -39,7 +39,7 @@ class DetectionConfig(BaseModel):
     visit_center_distance: float = 2.0
     max_visit_seconds: int = 600
     recheck_window_frames: int = Field(default=30, ge=0)
-    recheck_every_n_frames: int = Field(default=1, ge=1)
+    recheck_every_n_frames: int = Field(default=3, ge=1)
 
 
 class LoggingConfig(BaseModel):

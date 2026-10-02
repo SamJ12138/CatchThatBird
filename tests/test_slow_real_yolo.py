@@ -1,4 +1,4 @@
-"""The five tests that load the real yolov8n.pt (marker `slow`). They run
+"""The six tests that load the real yolov8n.pt (marker `slow`). They run
 main.py in a subprocess so the test process itself never imports ultralytics."""
 from __future__ import annotations
 
@@ -101,8 +101,8 @@ def clip_seconds(event: dict) -> float:
 
 
 # The hummingbird enters the frame at 2.8 s and YOLO first finds it at 3.0 s,
-# still in the air (docs/observations.md, R2). A visit must open within 0.5 s
-# of that.
+# still in the air (docs/observations.md, R2). The paced runs must open a visit
+# within 0.5 s of that.
 BIRD_FIRST_FOUND_S = 3.0
 OPEN_WITHIN_S = 0.5
 
@@ -119,17 +119,25 @@ def test_real_clip_is_logged_as_a_visit(tmp_path) -> None:
 
 
 @pytest.mark.slow
-def test_real_clip_arrival_is_not_missed_when_the_gated_frame_is_blurred(tmp_path) -> None:
+@pytest.mark.parametrize("every_n, opens_by_s", [(3, 3.6), (1, 3.5)])
+def test_real_clip_arrival_is_not_missed_when_the_gated_frame_is_blurred(
+        tmp_path, every_n, opens_by_s) -> None:
     """R2, made repeatable. Run c2c24c8d opened its visit at 5.93 s because
     load moved its gated frames to 96 (the bird blurred in flight) and 138 (a
     second after it settled, its still body already background). Warm-up 53
     and a cadence of 42 put the gated frames of an unpaced run on 54, 96, 138
-    and 180: without the re-check the visit opens on frame 180, 5.97 s."""
+    and 180: without the re-check the visit opens on frame 180, 5.97 s.
+
+    With it, the crop of frame 96 is re-checked. On every third frame (the
+    default) the bird is found on frame 108, 3.57 s: after 99, 102 and 105,
+    on which YOLO still finds nothing. On every frame it is found on frame
+    104, 3.43 s, inside the 0.5 s of the original criterion."""
     events = run_real_clip(tmp_path, "--no-pace",
                            **{"motion_warmup_frames: 60": "motion_warmup_frames: 53",
-                              "process_every_n_frames: 30": "process_every_n_frames: 42"})
+                              "process_every_n_frames: 30": "process_every_n_frames: 42",
+                              "recheck_every_n_frames: 3": f"recheck_every_n_frames: {every_n}"})
     assert len(events) == 1, json.dumps(events)
-    assert clip_seconds(events[0]) <= BIRD_FIRST_FOUND_S + OPEN_WITHIN_S, json.dumps(events)
+    assert clip_seconds(events[0]) <= opens_by_s, json.dumps(events)
     assert events[0]["visit_frames"] >= 5
 
 

@@ -84,19 +84,21 @@ def bird_lands_on_90(n: int = 150) -> list[np.ndarray]:
 def test_a_bird_blurred_on_the_gated_frame_opens_its_visit_within_five_frames(tmp_path, obs) -> None:
     """The brief's case. The bird is there from frame 90, a gated frame, but
     YOLO finds nothing on it (blurred); it would find the bird on 91 onward.
-    The visit must open by frame 95, not wait for the gated frame 120."""
+    The visit must open by frame 95, not wait for the gated frame 120. With
+    the default re-check on every third frame, it opens on frame 93."""
     fake = FakePredictor(boxes(range(91, 151), BIRD), within_crop=True)
 
     events, _ = run(tmp_path, obs, fake, bird_lands_on_90())
 
     (ev,) = events
-    assert 91 <= ev["frame_seq"] <= 95
+    assert ev["frame_seq"] == 93
     assert ev["bbox_xywh"] == list(BIRD)
     assert ev["ts"] == datetime.fromtimestamp(T0 + (ev["frame_seq"] - 1) / FPS).astimezone() \
         .isoformat(timespec="milliseconds")
     calls = yolo_calls(obs)
     assert calls[90] == Counter(motion=1)                 # the rejected motion crop
-    assert calls[ev["frame_seq"]] == Counter(recheck=1)   # found on a re-check, not at a tick
+    assert calls[93] == Counter(recheck=1)                # found on a re-check, not at a tick
+    assert not calls[91] and not calls[92]                # every third frame of the window
 
 
 def test_without_the_window_the_same_bird_is_never_logged(tmp_path, obs) -> None:
@@ -110,15 +112,15 @@ def test_without_the_window_the_same_bird_is_never_logged(tmp_path, obs) -> None
     assert set(yolo_calls(obs)) == {90}
 
 
-def test_a_coarser_recheck_rate_still_opens_the_visit_by_frame_95(tmp_path, obs) -> None:
+def test_rechecking_every_frame_opens_the_visit_on_the_next_frame(tmp_path, obs) -> None:
+    """recheck_every_n_frames 1: two frames earlier, for three times the calls."""
     fake = FakePredictor(boxes(range(91, 151), BIRD), within_crop=True)
 
-    events, _ = run(tmp_path, obs, fake, bird_lands_on_90(), recheck_every_n_frames=3)
+    events, _ = run(tmp_path, obs, fake, bird_lands_on_90(), recheck_every_n_frames=1)
 
     (ev,) = events
-    assert ev["frame_seq"] == 93
-    calls = yolo_calls(obs)
-    assert not calls[91] and not calls[92]
+    assert ev["frame_seq"] == 91
+    assert yolo_calls(obs)[91] == Counter(recheck=1)
 
 
 def test_the_visit_found_on_a_recheck_is_then_tracked_at_the_cadence(tmp_path, obs) -> None:
@@ -129,9 +131,9 @@ def test_the_visit_found_on_a_recheck_is_then_tracked_at_the_cadence(tmp_path, o
     events, _ = run(tmp_path, obs, fake, bird_lands_on_90(210))
 
     (ev,) = events
-    assert ev["frame_seq"] == 91 and ev["visit_frames"] == 5       # 91, then 120, 150, 180, 210
+    assert ev["frame_seq"] == 93 and ev["visit_frames"] == 5       # 93, then 120, 150, 180, 210
     calls = yolo_calls(obs)
-    assert sorted(calls) == [90, 91, 120, 150, 180, 210]
+    assert sorted(calls) == [90, 93, 120, 150, 180, 210]
     assert all(calls[s] == Counter(track=1) for s in (120, 150, 180, 210))
 
 
@@ -164,14 +166,15 @@ def test_the_background_does_not_learn_the_rechecked_region(obs) -> None:
 # ---------------------------------------------------------------- bounded cost
 
 def test_a_window_that_finds_nothing_ends_after_recheck_window_frames(tmp_path, obs) -> None:
-    """The object is never a bird: the window's 30 re-checks (91-120) and no
-    more. The run log records the window's start and that it expired."""
+    """The object is never a bird: the window's 30 frames (91-120), re-checked
+    on every third, 10 calls, and no more. The run log records the window's
+    start and that it expired."""
     events, _ = run(tmp_path, obs, FakePredictor(within_crop=True), bird_lands_on_90(300))
 
     assert events == []
     calls = yolo_calls(obs)
-    assert sorted(s for s in calls if calls[s]["recheck"]) == list(range(91, 121))
-    assert sum(sum(c.values()) for c in calls.values()) <= 31 + 2  # + ticks while it is absorbed
+    assert sorted(s for s in calls if calls[s]["recheck"]) == list(range(93, 121, 3))
+    assert sum(sum(c.values()) for c in calls.values()) <= 11 + 2  # + ticks while it is absorbed
     recheck = [(l["frame_seq"], l["event"], l["context"].get("reason"))
                for l in read_log(obs.path) if l["stage"] == "recheck"]
     assert recheck[:2] == [(90, "start", None), (120, "skip", "expired")]
@@ -198,7 +201,7 @@ def test_steady_non_bird_motion_gets_one_window_not_one_per_tick(tmp_path, obs) 
     assert events == []
     calls = yolo_calls(obs)
     rechecked = sorted(s for s in calls if calls[s]["recheck"])
-    assert rechecked == list(range(91, 121)) + list(range(391, 421))
+    assert rechecked == list(range(93, 121, 3)) + list(range(393, 421, 3))
     ticks = [150, 180, 210, 240, 270, 300]                # steady motion after the window
     assert all(calls[s] == Counter(motion=1) for s in ticks)
     assert not any(calls[s] for s in range(121, 361) if s not in ticks)
@@ -226,7 +229,7 @@ def test_motion_next_to_an_open_visit_opens_no_window(tmp_path, obs, bill_x, win
     calls = yolo_calls(obs)
     assert all(calls[s] == Counter(motion=1, track=1) for s in (90, 150, 180, 210, 240))
     if window:
-        assert sorted(s for s in calls if calls[s]["recheck"]) == list(range(91, 121))
+        assert sorted(s for s in calls if calls[s]["recheck"]) == list(range(93, 121, 3))
     else:
         assert set(calls) == {60, 90, 120, 150, 180, 210, 240}
 
@@ -235,9 +238,9 @@ def test_motion_next_to_an_open_visit_opens_no_window(tmp_path, obs, bill_x, win
 
 def test_window_defaults_and_config_file_keys() -> None:
     cfg = DetectionConfig()
-    assert (cfg.recheck_window_frames, cfg.recheck_every_n_frames) == (30, 1)
+    assert (cfg.recheck_window_frames, cfg.recheck_every_n_frames) == (30, 3)
     on_disk = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))["detection"]
-    assert on_disk["recheck_window_frames"] == 30 and on_disk["recheck_every_n_frames"] == 1
+    assert on_disk["recheck_window_frames"] == 30 and on_disk["recheck_every_n_frames"] == 3
     with pytest.raises(ValueError):
         DetectionConfig(recheck_every_n_frames=0)
     with pytest.raises(ValueError):
