@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml/badge.svg)](https://github.com/SamJ12138/CatchThatBird/actions/workflows/ci.yml)
 
-![The input clip and the pipeline's annotated preview side by side: a house sparrow lands in the watched region, is boxed as a bird while it perches, and flies off](docs/demo.gif)
+![The input clip and the pipeline's annotated preview side by side: a hummingbird flies in to a feeder, is boxed as a bird while it perches, and flies off](docs/demo-real.gif)
 
-*Rendered from a pipeline run, not screen-recorded: the quickstart's synthetic clip (a noisy grey background with a public-domain house sparrow photo composited in) on the left, the preview's overlays on the right. The perch plays at 2x.*
+*Rendered from a pipeline run on real footage, not screen-recorded: a hummingbird flies in to a feeder, perches and flies off (Pixabay video by ZacharyCrespin, Pixabay Content License; source in [data/samples/real/CREDITS.md](data/samples/real/CREDITS.md)). The input is on the left, the preview's overlays on the right. The pipeline ran at real-time pace (the clip's 30 fps, as from a camera) on a laptop CPU, with the default config (run_id `720a5997`). The perch plays at 2x.*
 
 CatchThatBird keeps a passive log of birds visiting a parked car, seen through a webcam (a DJI Osmo Pocket 3 in webcam mode, in the author's setup). It writes one line per visit to `data/events.jsonl`, plus a snapshot of each bird, so visit times can be analysed later. It sends no alerts and records no video. Detection is two-stage so that a laptop CPU is enough. Cheap background subtraction (MOG2) watches a region around the car on every frame, and the YOLOv8n neural network runs only on a small crop around motion, about once a second.
 
@@ -62,6 +62,10 @@ Wrote ...\data\samples\synth_bird.mp4 (600 frames, 1280x720@30); a house sparrow
 ```
 
 The clip is synthetic: 20 s of a plain grey background with sensor-like noise. A real photo of a house sparrow is composited into it (public domain, U.S. Fish and Wildlife Service; source and license in [data/samples/assets/CREDITS.md](data/samples/assets/CREDITS.md)). The bird flies into the region of interest after 3 s, perches for about 13 s and flies off. `--no-bird` makes the older clip instead, a dark blob that YOLO never calls a bird.
+
+![The input clip and the pipeline's annotated preview side by side: a house sparrow lands in the watched region, is boxed as a bird while it perches, and flies off](docs/demo.gif)
+
+*Rendered from a pipeline run, not screen-recorded: the quickstart's synthetic clip (a noisy grey background with a public-domain house sparrow photo composited in) on the left, the preview's overlays on the right. The perch plays at 2x.*
 
 **5. Run the pipeline on it**
 
@@ -227,6 +231,12 @@ The design, the threading model and the measured costs are in [docs/architecture
  data/events.jsonl: one line per visit, written when the visit closes
 ```
 
+**On real footage.** The headline clip (fetched with `python scripts/fetch_real_clip.py`, not stored in the repository) is a hummingbird at a feeder, 1920x1080 at 30 fps. The ROI in `data/samples/real/roi.json` was computed from a YOLO pass. On a paced run with the default config (run_id `493402ed`, log in [docs/runs/](docs/runs/)):
+
+- **One visit, the whole perch.** The bird arrived at about 3.0 s and left at 14.0 s. The visit opened at 3.03 s, every one of its 11 gated frames confirmed the bird (`visit_frames` 11), and `last_seen` was 10.7 s after `ts` (13.77 s into the clip). It was never split or lost while the bird sat still.
+- **YOLO rate.** Before the visit there was one gated frame, with no motion large enough, so no call. With the visit open, YOLO ran 25 times in 13.6 s, 1.84 calls/s: 2 per gated frame after the first, one on the track crop and one on the motion crop. While the bird perched, that motion was its bill, which sticks out of its box.
+- **The arrival can be missed.** In another run of the same clip (run_id `c2c24c8d`, with `--annotate-out`) the gated frames fell elsewhere: one on the bird in flight, blurred, and one a second after landing, when the still body had been absorbed into the background and only the wing moved. The visit opened 2.9 s late, with `visit_frames` 8. Details: [docs/observations.md](docs/observations.md), "Real-clip findings".
+
 ## Configuration
 
 All settings are in `config.yaml`. Unknown keys and wrong types stop the program at startup with a one-line message. Use `--config PATH` for another file. Relative paths resolve against `--data-root` (default: the repository root), not the current directory.
@@ -325,7 +335,15 @@ python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
 
-`make_demo_gif.py` runs `main.py --annotate-out` on `data/samples/demo.mp4` if that file exists, else on `synth_bird.mp4`, in a temporary directory (your `data/events.jsonl` is not touched). The run is paced at the clip's frame rate like a camera, so the HUD shows live numbers (about 30 fps); it takes as long as the clip. It cuts from 2 s before the first visit's `ts` to 2 s after its `last_seen`, and puts the input and the annotated frames side by side. If that is longer than 12 s, the perch plays faster, with a label such as `2x`. ffmpeg comes from `imageio-ffmpeg` in `requirements-dev.txt`.
+`make_demo_gif.py` runs `main.py --annotate-out` on `data/samples/demo.mp4` if that file exists, else on `synth_bird.mp4`, in a temporary directory (your `data/events.jsonl` is not touched). The run is paced at the clip's frame rate like a camera, so the HUD shows live numbers (about 30 fps); it takes as long as the clip. It cuts from 2 s before the first visit's `ts` to 2 s after its `last_seen`, and puts the input and the annotated frames side by side. If that is longer than 12 s, the perch plays faster, with a label such as `2x`. ffmpeg comes from `imageio-ffmpeg` in `requirements-dev.txt`. If no size fits in 5 MB with the default encoding, the script retries with ordered dithering on lightly denoised frames, which real footage needs.
+
+`docs/demo-real.gif` reuses a kept run instead (`<dir>` is any scratch directory):
+
+```
+python scripts/fetch_real_clip.py
+python main.py --source data/samples/real/hummingbird_feeder.mp4 --roi-file data/samples/real/roi.json --headless --yes --data-root <dir> --log-dir <dir>/logs --annotate-out <dir>/annotated.mp4
+python scripts/make_demo_gif.py --source data/samples/real/hummingbird_feeder.mp4 --annotated <dir>/annotated.mp4 --events <dir>/data/events.jsonl --out docs/demo-real.gif
+```
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
@@ -364,7 +382,8 @@ Known limitations:
 - **CPU-only by default.** A CUDA build of PyTorch speeds up only the YOLO step (see `requirements.txt`).
 - **A hard kill loses at most the last 60 s of an open visit.** The visit itself is recovered on the next start from `data/open_visits.json`, with `"recovered": true`, but `last_seen` and `visit_frames` are as of the last checkpoint.
 - **Two birds close together can merge.** A detection joins an open visit if its centre is within 2x the visit's box size. That keeps a hopping bird in one visit, but two birds perched side by side count as one.
-- **Open visits cost YOLO time.** While a visit is open, each gated frame runs YOLO once per open visit, plus once for motion elsewhere. That continues for up to `dedupe_within_seconds` after the bird has left.
+- **Open visits cost YOLO time.** While a visit is open, each gated frame runs YOLO once per open visit, plus once for motion elsewhere. That continues for up to `dedupe_within_seconds` after the bird has left. Motion from a part of the bird outside its box (the hummingbird's bill on the real clip) counts as motion elsewhere, so a perched bird can cost 2 calls per gated frame.
+- **A visit can start late.** A visit opens only when YOLO finds the bird in a motion crop. A bird in flight is blurred, and a bird that holds still is absorbed into the background in about a second, before any visit exists to keep it out. On the real clip, one of four runs opened the visit 2.9 s after the bird arrived.
 - **Anything YOLO keeps calling a bird stays one long visit.** A still object that YOLO scores at or above the threshold (a decoy, say) is written as a truncated visit every `max_visit_seconds` (10 min by default), for as long as it stays.
 
 ## License

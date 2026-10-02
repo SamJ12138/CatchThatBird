@@ -26,7 +26,7 @@ This document covers the module graph, the threading model, the two-stage detect
 
    scripts/make_synth_video.py   synthetic clip for --source runs: a real bird photo, or a blob
    scripts/failure_report.py     summarises logs/run_<id>.jsonl (stdlib only)
-   scripts/make_demo_gif.py      docs/demo.gif from main.py --annotate-out and events.jsonl
+   scripts/make_demo_gif.py      docs/demo.gif, docs/demo-real.gif from main.py --annotate-out
    scripts/fetch_real_clip.py    downloads the real bird clip (Pixabay) into data/samples/real/
    tests/fakes.py                FakeCapture, FakeDevice, FakePredictor, FakeClock
 ```
@@ -154,6 +154,7 @@ These runs are the default bird clip (`synth_bird.mp4`, 1280×720, example ROI) 
 - The track crop keeps being classified until `dedupe_within_seconds` after the bird's last confirmation. After the bird left at ~17 s, the last gated frames ran track crops that found nothing.
 - A track crop (the 103×67 bird padded by 50 px, about 203×167) cost the same as a motion crop in this session: about 60 ms. MOG2 p50 stayed 1.8–1.9 ms on the ROI. Masking a box costs one copy of the ROI per frame while a visit is open, and the background image costs about 1 ms per gated frame.
 - Run_id `2f100fc6` logged one visit: `visit_frames` 14, `last_seen` 13.3 s after `ts`. Before this change, the same clip gave `visit_frames` 1 and `last_seen == ts`.
+- On real footage (a hummingbird at a feeder, 1920x1080, ROI 0.99 Mpx), run_id `493402ed` held one visit through the whole perch at 1.84 YOLO calls/s, 2 per gated frame: the bird's bill, outside its box, kept passing the motion gate. MOG2 p50 was 12.0–12.5 ms. All four real-clip runs are in [observations.md](observations.md), "Real-clip findings".
 
 To reproduce a row, regenerate the blob clip these runs used (`python scripts/make_synth_video.py --no-bird [--width 1920 --height 1080 --out data/samples/synth_blob_1080p.mp4]`; without `--no-bird` the script now makes the bird clip), then run `main.py --source <clip> --headless` with `--roi-file` pointing either at `data/roi.example.json` or at a file holding `{"whole_frame": true, "frame_width": W, "frame_height": H}`. Read the result with `python scripts/failure_report.py --latest`.
 

@@ -23,6 +23,11 @@ label, so the GIF fits; landing and take-off stay at 1x.
 Encoding: ffmpeg from imageio-ffmpeg (requirements-dev.txt), palettegen then
 paletteuse. Tries 480 px panels at 10 fps, then 8 fps, then 400 px at 8 fps,
 and keeps the first result of 5 MB or less (else the smallest one up to 8 MB).
+Those three use error-diffusion dithering. Real footage stays larger with it:
+sensor noise changes every frame, so every frame is dithered differently and
+nothing repeats. The same three sizes are then tried with "ordered" encoding:
+a light temporal denoise (hqdn3d), a 128-colour palette, Bayer dithering, and
+only the changed rectangle stored per frame.
 """
 from __future__ import annotations
 
@@ -47,7 +52,9 @@ MARGIN_S = 2.0
 MAX_SECONDS = 12.0
 TARGET_BYTES = 5 * 1024 * 1024
 HARD_LIMIT_BYTES = 8 * 1024 * 1024
-LADDER = ((480, 10), (480, 8), (400, 8))   # (panel width px, fps), in order of preference
+SIZES = ((480, 10), (480, 8), (400, 8))    # (panel width px, fps), in order of preference
+LADDER = tuple((w, fps, style) for style in ("diffusion", "ordered") for w, fps in SIZES)
+DENOISE = "hqdn3d=0:0:8:8"                 # temporal only: steadies noise, keeps detail
 CAPTION_PX = 24
 
 
@@ -184,17 +191,24 @@ def ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-def encode_gif(frames_dir: Path, fps: int, out: Path) -> None:
-    """Two passes: an optimal 256-colour palette for the whole clip, then the
-    frames mapped onto it. -loop 0 repeats forever."""
+def encode_gif(frames_dir: Path, fps: int, out: Path, style: str = "diffusion") -> None:
+    """Two passes: an optimal palette for the whole clip, then the frames mapped
+    onto it. -loop 0 repeats forever. `style` is "diffusion" (256 colours,
+    Sierra dithering) or "ordered" (see the module docstring)."""
     ff = ffmpeg_exe()
     pattern = str(frames_dir / "f%05d.png")
     palette = frames_dir / "palette.png"
+    if style == "ordered":
+        gen = f"{DENOISE},palettegen=max_colors=128:stats_mode=full"
+        use = (f"[0:v]{DENOISE}[v];[v][1:v]paletteuse=dither=bayer:bayer_scale=4"
+               ":diff_mode=rectangle")
+    else:
+        gen, use = "palettegen=stats_mode=full", "paletteuse=dither=sierra2_4a"
     for cmd in (
         [ff, "-v", "error", "-y", "-framerate", str(fps), "-i", pattern,
-         "-vf", "palettegen=stats_mode=full", str(palette)],
+         "-vf", gen, str(palette)],
         [ff, "-v", "error", "-y", "-framerate", str(fps), "-i", pattern, "-i", str(palette),
-         "-lavfi", "paletteuse=dither=sierra2_4a", "-loop", "0", str(out)],
+         "-lavfi", use, "-loop", "0", str(out)],
     ):
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -202,17 +216,18 @@ def encode_gif(frames_dir: Path, fps: int, out: Path) -> None:
 
 
 def render(source: Path, annotated: Path, frames: list[OutFrame], clip_fps: float,
-           width: int, fps: int, out: Path, work: Path) -> tuple[int, int]:
+           width: int, fps: int, out: Path, work: Path, *,
+           style: str = "diffusion") -> tuple[int, int]:
     """Write the GIF; returns its (width, height)."""
     pairs = align([round(f.t * clip_fps) for f in frames], annotated_seqs(annotated))
     left = read_frames(source, [s for s, _ in pairs], width)
     right = read_frames(annotated, [a for _, a in pairs], width)
-    frames_dir = work / f"frames_{width}_{fps}"
+    frames_dir = work / f"frames_{width}_{fps}_{style}"
     frames_dir.mkdir()
     for n, (f, (s, a)) in enumerate(zip(frames, pairs)):
         image = compose(left[s], right[a], f.label)
         cv2.imwrite(str(frames_dir / f"f{n:05d}.png"), image)
-    encode_gif(frames_dir, fps, out)
+    encode_gif(frames_dir, fps, out, style)
     return image.shape[1], image.shape[0]
 
 
@@ -283,15 +298,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             seg = segment(first_visit(events), clip_fps, clip_seconds)
             args.out.parent.mkdir(parents=True, exist_ok=True)
             results = []
-            for width, fps in LADDER:
+            for width, fps, style in LADDER:
                 frames, factor = plan(seg, fps)
-                candidate = work / f"demo_{width}_{fps}.gif"
-                size = render(source, annotated, frames, clip_fps, width, fps, candidate, work)
+                candidate = work / f"demo_{width}_{fps}_{style}.gif"
+                size = render(source, annotated, frames, clip_fps, width, fps, candidate, work,
+                              style=style)
                 results.append((candidate.stat().st_size, width, fps, size, frames, factor,
-                                candidate))
+                                candidate, style))
                 if candidate.stat().st_size <= TARGET_BYTES:
                     break
-            nbytes, width, fps, (gw, gh), frames, factor, best = (
+            nbytes, width, fps, (gw, gh), frames, factor, best, style = (
                 results[-1] if results[-1][0] <= TARGET_BYTES else min(results, key=lambda r: r[0]))
             if nbytes > HARD_LIMIT_BYTES:
                 raise DemoError(f"smallest GIF is {nbytes / 1e6:.1f} MB, over the 8 MB limit")
@@ -301,7 +317,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     speed = f"perch {seg.first:.1f}-{seg.last:.1f} s at {factor}x" if factor > 1 else "all at 1x"
-    print(f"Wrote {shown(args.out)}: {nbytes / 1e6:.2f} MB, {gw}x{gh}, {fps} fps, "
+    print(f"Wrote {shown(args.out)}: {nbytes / 1e6:.2f} MB, {gw}x{gh}, {fps} fps, {style}, "
           f"{len(frames)} frames ({len(frames) / fps:.1f} s); {shown(source)} "
           f"{seg.start:.1f}-{seg.end:.1f} s, {speed}")
     return 0

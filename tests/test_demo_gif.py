@@ -129,6 +129,46 @@ def test_fixture_to_gif_under_the_limit(tmp_path, capsys) -> None:
     assert "2x" in report and "960x" in report
 
 
+def test_ordered_dither_is_tried_only_after_error_diffusion(tmp_path, monkeypatch) -> None:
+    """Real footage: every frame's background shimmers, so error diffusion
+    re-dithers it all and the GIF stays large. The ladder then retries with
+    ordered (Bayer) dithering on denoised frames, which repeat between frames."""
+    tried = []
+
+    def fake_render(source, annotated, frames, clip_fps, width, fps, out, work, *, style):
+        tried.append((width, fps, style))
+        out.write_bytes(b"x" * (7_000_000 if style == "diffusion" else 4_000_000))
+        return 2 * width, 249
+
+    monkeypatch.setattr(demo, "render", fake_render)
+    clip = make_video(tmp_path / "clip.mp4", seconds=16, width=320, height=180, bird=False)
+    events = write_events(tmp_path / "events.jsonl",
+                          event(frame_seq=61, last_seen="2026-09-30T20:06:27.080-04:00"))
+    out = tmp_path / "demo.gif"
+    assert demo.main(["--source", str(clip), "--annotated", str(clip), "--events", str(events),
+                      "--out", str(out)]) == 0
+    assert tried == [(480, 10, "diffusion"), (480, 8, "diffusion"), (400, 8, "diffusion"),
+                     (480, 10, "ordered")]
+    assert out.stat().st_size == 4_000_000
+
+
+def test_ordered_style_denoises_and_uses_a_bayer_palette(tmp_path, monkeypatch) -> None:
+    cmds = []
+
+    class Done:
+        returncode, stderr = 0, ""
+
+    monkeypatch.setattr(demo.subprocess, "run", lambda cmd, **kw: cmds.append(cmd) or Done())
+    demo.encode_gif(tmp_path, 10, tmp_path / "x.gif", style="ordered")
+    palettegen, paletteuse = (" ".join(c) for c in cmds)
+    assert "hqdn3d" in palettegen and "max_colors=128" in palettegen
+    assert "hqdn3d" in paletteuse and "dither=bayer" in paletteuse
+    assert "diff_mode=rectangle" in paletteuse
+    cmds.clear()
+    demo.encode_gif(tmp_path, 10, tmp_path / "y.gif")                 # default: unchanged
+    assert "sierra2_4a" in " ".join(cmds[1]) and "hqdn3d" not in " ".join(cmds[0])
+
+
 def test_imageio_ffmpeg_is_a_dev_dependency_only() -> None:
     assert "imageio-ffmpeg" in (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
     assert "imageio" not in (ROOT / "requirements.txt").read_text(encoding="utf-8")

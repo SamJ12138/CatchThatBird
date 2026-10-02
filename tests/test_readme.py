@@ -107,16 +107,33 @@ def test_quickstart_shows_a_real_detection_from_the_synthetic_clip(readme: str) 
     assert "Your own camera" in quick
 
 
-def test_demo_gif_sits_under_the_title_and_badge(readme: str) -> None:
+def test_real_demo_gif_sits_under_the_title_and_badge(readme: str) -> None:
     intro = [l for l in readme.split("\n## ", 1)[0].splitlines() if l.strip()]
     assert intro[0] == "# CatchThatBird" and intro[1].startswith("[![CI]")
-    assert intro[2].startswith("![") and intro[2].endswith("(docs/demo.gif)")
+    assert intro[2].startswith("![") and intro[2].endswith("(docs/demo-real.gif)")
     caption = intro[3]
     assert caption.startswith("*") and caption.endswith("*")
-    assert "synthetic" in caption and "public-domain" in caption
-    gif = ROOT / "docs" / "demo.gif"
-    assert gif.read_bytes()[:6] == b"GIF89a" and gif.stat().st_size <= 8 * 1024 * 1024
+    for needle in ("hummingbird", "ZacharyCrespin", "Pixabay Content License",
+                   "data/samples/real/CREDITS.md", "real-time pace", "CPU"):
+        assert needle in caption, needle
+    gif = ROOT / "docs" / "demo-real.gif"
+    assert gif.read_bytes()[:6] == b"GIF89a" and gif.stat().st_size <= 5 * 1024 * 1024
     assert "python scripts/make_demo_gif.py" in section(readme, "Development")
+
+
+def test_synthetic_demo_gif_moved_to_the_quickstart(readme: str) -> None:
+    quick = section(readme, "Quickstart")
+    lines = quick.splitlines()
+    (i,) = [n for n, l in enumerate(lines) if l.startswith("![") and l.endswith("(docs/demo.gif)")]
+    caption = next(l for l in lines[i + 1:] if l.strip())
+    assert caption.startswith("*") and "synthetic" in caption and "public-domain" in caption
+    assert (ROOT / "docs" / "demo.gif").read_bytes()[:6] == b"GIF89a"
+
+
+def test_how_it_works_cites_the_real_clip_run(readme: str) -> None:
+    how = section(readme, "How it works")
+    assert "run_id `493402ed`" in how and "visit_frames" in how and "YOLO" in how
+    assert (ROOT / "docs" / "runs" / "run_493402ed.jsonl").is_file()
 
 
 def test_no_fixture_chart_on_the_front_page(readme: str) -> None:
