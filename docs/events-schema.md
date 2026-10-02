@@ -17,7 +17,7 @@
 | `last_seen` | string | Capture time of the visit's last matching detection (same format as `ts`) |
 | `truncated` | bool | `true` if the visit reached `detection.max_visit_seconds` (600 s) and was cut there. The next confirmation of the bird opens a new visit, so a very long stay is several consecutive lines |
 | `recovered` | bool | `true` if the line was written at startup from `open_visits.json`: the previous run ended without closing the visit (a hard kill). `last_seen` and `visit_frames` are as of the last checkpoint |
-| `visit_frames` | int | Number of gated frames with a matching detection, ≥ 1 |
+| `visit_frames` | int | Number of frames with a matching detection, ≥ 1. These are gated frames, plus the frame that opened the visit if that was a re-check between two gated frames |
 
 Lines are written when a visit **closes**, so they appear in close order. Sort by `ts` for start order.
 

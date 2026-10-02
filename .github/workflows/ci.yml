@@ -4,7 +4,7 @@ on:
   push:
   pull_request:
 
-# Fast suite only: -m "not slow" skips the one test that loads the real
+# Fast suite only: -m "not slow" skips the five tests that load the real
 # yolov8n.pt. No test touches a camera; fakes stand in for the capture
 # device and the predictor.
 
