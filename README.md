@@ -6,6 +6,8 @@
 
 *Rendered from a pipeline run on real footage, not screen-recorded: a hummingbird flies in to a feeder, perches and flies off (Pixabay video by ZacharyCrespin, Pixabay Content License; source in [data/samples/real/CREDITS.md](data/samples/real/CREDITS.md)). The input is on the left, the preview's overlays on the right. The pipeline ran at real-time pace (the clip's 30 fps, as from a camera) on a laptop CPU, with the default config (run_id `720a5997`). The perch plays at 2x.*
 
+There is a bird that lives somewhere near my apartment and has been using my car as a toilet for months, always at a time of day I never managed to catch, and I got curious enough about its schedule that I wanted to know exactly when it shows up so I could be sitting in the driver's seat waiting for it one morning and give it the fright of its life. So I pointed my DJI Action 4 at the car as the sensor, wrote a pipeline that watches for motion and asks a small bird detector whether the moving thing is a bird, and started logging every visit with a timestamp and a snapshot. The bird has not been caught yet, but the log is getting longer.
+
 CatchThatBird keeps a passive log of birds visiting a parked car, seen through a webcam (a DJI Osmo Pocket 3 in webcam mode, in the author's setup). It writes one line per visit to `data/events.jsonl`, plus a snapshot of each bird, so visit times can be analysed later. It sends no alerts and records no video. Detection is two-stage so that a laptop CPU is enough. Cheap background subtraction (MOG2) watches a region around the car on every frame, and the YOLOv8n neural network runs only on a small crop around motion, about once a second.
 
 ## Quickstart
