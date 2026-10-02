@@ -4,6 +4,7 @@ redistributing it as is)."""
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,3 +103,34 @@ def test_the_clip_is_ignored_and_its_credits_are_not() -> None:
                               cwd=ROOT).returncode == 0
     assert ignored(fetch.OUT.relative_to(ROOT).as_posix())
     assert not ignored("data/samples/real/CREDITS.md")
+
+
+# ------------------------------------------------------------------ ROI
+
+def test_roi_covers_the_perch_not_the_flights() -> None:
+    perch = [(480, 270, 1190, 1060), (470, 300, 1200, 1050), (490, 260, 1185, 1065)] * 4
+    flights = [(11, 186, 884, 746), (226, 130, 1150, 453)]       # flying in, flying off
+    x, y, w, h = fetch.roi_from_boxes(perch + flights, (1920, 1080), pad=0.1)
+    # Union of the perch boxes, 470..1200 x 260..1065, padded by 10% of its size.
+    assert (x, y) == (470 - 73, 260 - 80)
+    assert x + w == 1200 + 73
+    assert y + h == 1080                                          # clamped to the frame
+
+
+def test_roi_needs_detections() -> None:
+    with pytest.raises(fetch.FetchError, match="no bird"):
+        fetch.roi_from_boxes([], (1920, 1080))
+
+
+@needs_git
+def test_the_real_roi_is_committed_for_a_1080p_frame() -> None:
+    path = fetch.ROI
+    assert path == fetch.OUT.parent / "roi.json"
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", path.relative_to(ROOT).as_posix()],
+                             cwd=ROOT, capture_output=True).returncode == 0
+    assert tracked
+    roi = json.loads(path.read_text(encoding="utf-8"))
+    assert (roi["frame_width"], roi["frame_height"]) == (1920, 1080)
+    assert 0 <= roi["x"] and roi["x"] + roi["w"] <= 1920
+    assert 0 <= roi["y"] and roi["y"] + roi["h"] <= 1080
+    assert roi["w"] * roi["h"] < 1920 * 1080 / 2                  # a region, not the frame

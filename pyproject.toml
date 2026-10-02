@@ -9,7 +9,7 @@ testpaths = ["tests"]
 pythonpath = ["."]            # the project root is the import root
 addopts = "--strict-markers -p no:cacheprovider"
 markers = [
-    "slow: loads the real yolov8n.pt (two tests; excluded in CI with -m \"not slow\")",
+    "slow: loads the real yolov8n.pt (three tests; excluded in CI with -m \"not slow\")",
 ]
 
 [tool.coverage.run]

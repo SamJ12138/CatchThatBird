@@ -15,3 +15,7 @@ A hummingbird flies in to a red nectar feeder, perches on it for about 8 s and f
 **Changes:** none to the picture. `docs/demo-real.gif` is a derived work: frames of this clip next to the pipeline's annotated output, scaled down, with captions and a sped-up middle section.
 
 Attribution is not legally required under the Pixabay Content License. It is given here so the source can be checked.
+
+## roi.json
+
+The region of interest for this clip (x=248 y=164 w=1078 h=916 on 1920×1080), for `main.py --roi-file`. It was computed, not drawn: `python scripts/fetch_real_clip.py --roi` runs YOLOv8n on every 5th frame and takes the union of the boxes where the bird perches, padded by 10%. See `docs/observations.md`, "Real-clip findings".

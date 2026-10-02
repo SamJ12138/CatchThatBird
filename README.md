@@ -320,7 +320,7 @@ python scripts/failure_report.py logs/run_<run_id>.jsonl
 ```
 python -m pip install -r requirements-dev.txt
 python -m pytest -m "not slow"          # the fast suite: no camera, no YOLO
-python -m pytest                        # adds the one test that loads the real yolov8n.pt
+python -m pytest                        # adds the three tests that load the real yolov8n.pt
 python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
@@ -329,7 +329,7 @@ python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
-The `slow` marker covers two tests that run the real model in a subprocess: a smoke test on the blob clip, and a check that the synthetic bird is detected where the script drew it. Everything else uses test doubles from `tests/fakes.py`:
+The `slow` marker covers three tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, and a run on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it) that must log a visit confirmed on at least 5 gated frames. Everything else uses test doubles from `tests/fakes.py`:
 
 - **`FakePredictor`** stands in for YOLO. The detector reaches YOLO only through a small `Predictor` protocol (`load()`, `predict()`, `names`), so a test passes the fake in:
 

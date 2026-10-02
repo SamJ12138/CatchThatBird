@@ -11,11 +11,23 @@ Content License does not allow redistributing it unchanged, and it is 10.7 MB.
 
 An existing output file is kept; pass --force to fetch it again. ffmpeg comes
 from imageio-ffmpeg (requirements-dev.txt).
+
+    python scripts/fetch_real_clip.py --roi      # also recompute data/samples/real/roi.json
+
+--roi runs YOLOv8n (the bird class) on every 5th frame of the whole frame and
+saves a region of interest around where the bird perches: the union of the
+boxes whose centre lies within PERCH_SPREAD x the median box size of the
+median centre (the flights in and out are left out), padded by ROI_PAD of its
+size on each side and clamped to the frame. The committed roi.json was made
+this way; nothing in the pipeline is tuned to it.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import math
+import statistics
 import subprocess
 import sys
 import time
@@ -31,6 +43,10 @@ AUTHOR = "ZacharyCrespin"
 SHA256 = "12096e93a385436ae9a07ed185267b98f212f390653667234d3c969a65008651"
 TRIM = (0.0, 16.6)          # seconds kept: the whole clip (empty 3 s, visit, empty 2.6 s)
 OUT = ROOT / "data" / "samples" / "real" / "hummingbird_feeder.mp4"
+ROI = OUT.parent / "roi.json"
+ROI_EVERY_N = 5          # frames between YOLO calls for --roi
+ROI_PAD = 0.1            # padding, as a fraction of the perch union's width / height
+PERCH_SPREAD = 0.15      # perch boxes: centre within this x median max(w, h) of the median centre
 USER_AGENT = "CatchThatBird/fetch_real_clip (github.com/SamJ12138/CatchThatBird)"
 
 
@@ -105,6 +121,61 @@ def fetch(out: Path = OUT, *, url: str = URL, sha256: str = SHA256, trim_range=T
     return out
 
 
+Box = tuple[int, int, int, int]   # x1, y1, x2, y2
+
+
+def roi_from_boxes(boxes: list[Box], frame_wh: tuple[int, int], pad: float = ROI_PAD,
+                   spread: float = PERCH_SPREAD) -> tuple[int, int, int, int]:
+    """ROI (x, y, w, h) around the perch: see the module docstring."""
+    if not boxes:
+        raise FetchError("no bird detected in the clip, so no ROI to draw")
+    cx = statistics.median((b[0] + b[2]) / 2 for b in boxes)
+    cy = statistics.median((b[1] + b[3]) / 2 for b in boxes)
+    size = statistics.median(max(b[2] - b[0], b[3] - b[1]) for b in boxes)
+    perch = [b for b in boxes
+             if math.hypot((b[0] + b[2]) / 2 - cx, (b[1] + b[3]) / 2 - cy) <= spread * size]
+    x1, y1 = min(b[0] for b in perch), min(b[1] for b in perch)
+    x2, y2 = max(b[2] for b in perch), max(b[3] for b in perch)
+    px, py = round((x2 - x1) * pad), round((y2 - y1) * pad)
+    x1, y1 = max(0, x1 - px), max(0, y1 - py)
+    x2, y2 = min(frame_wh[0], x2 + px), min(frame_wh[1], y2 + py)
+    return x1, y1, x2 - x1, y2 - y1
+
+
+def detect_birds(clip: Path, every: int = ROI_EVERY_N) -> tuple[list[Box], tuple[int, int]]:
+    """Bird boxes (conf >= 0.35, the pipeline's threshold) on every `every`th frame."""
+    import cv2
+    from ultralytics import YOLO   # only here: the tests never import ultralytics
+
+    model = YOLO(str(ROOT / "yolov8n.pt"))
+    cap = cv2.VideoCapture(str(clip))
+    if not cap.isOpened():
+        raise FetchError(f"cannot open {clip}")
+    boxes: list[Box] = []
+    i = 0
+    try:
+        while True:
+            ok, img = cap.read()
+            if not ok:
+                break
+            if i % every == 0:
+                result = model.predict(img, classes=[14], conf=0.35, verbose=False)[0]
+                boxes += [tuple(round(v) for v in b) for b in result.boxes.xyxy.tolist()]
+            i += 1
+        frame_wh = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    finally:
+        cap.release()
+    return boxes, frame_wh
+
+
+def write_roi(clip: Path = OUT, path: Path = ROI) -> tuple[int, int, int, int]:
+    boxes, (fw, fh) = detect_birds(clip)
+    x, y, w, h = roi_from_boxes(boxes, (fw, fh))
+    path.write_text(json.dumps({"x": x, "y": y, "w": w, "h": h, "frame_width": fw,
+                                "frame_height": fh}, indent=2) + "\n", encoding="utf-8")
+    return x, y, w, h
+
+
 def shown(path: Path) -> str:
     try:
         return str(path.resolve().relative_to(ROOT))
@@ -116,10 +187,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Download the real bird clip (Pixabay)")
     p.add_argument("--out", type=Path, default=OUT)
     p.add_argument("--force", action="store_true", help="download again even if --out exists")
+    p.add_argument("--roi", action="store_true",
+                   help="also recompute data/samples/real/roi.json with YOLOv8n")
     args = p.parse_args(argv)
     existed = args.out.exists() and not args.force
     try:
         out = fetch(args.out, force=args.force)
+        roi = write_roi(out) if args.roi else None
     except FetchError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -128,6 +202,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         print(f"Wrote {shown(out)}: {out.stat().st_size / 1e6:.1f} MB, "
               f"{TRIM[0]:g}-{TRIM[1]:g} s of {URL} (sha256 verified)")
+    if roi is not None:
+        print(f"Wrote {shown(ROI)}: x={roi[0]} y={roi[1]} w={roi[2]} h={roi[3]}")
     return 0
 
 

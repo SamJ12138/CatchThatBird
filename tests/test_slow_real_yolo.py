@@ -1,4 +1,4 @@
-"""The two tests that load the real yolov8n.pt (marker `slow`). They run
+"""The three tests that load the real yolov8n.pt (marker `slow`). They run
 main.py in a subprocess so the test process itself never imports ultralytics."""
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from scripts import fetch_real_clip as fetch
 from scripts import make_synth_video as synth
 from tests.conftest import ROOT, read_log, write_test_config
 
@@ -74,3 +75,25 @@ def test_real_yolo_detects_the_synthetic_bird(tmp_path) -> None:
         assert (tmp_path / "data" / ev["snapshot_crop"]).is_file()
         x, y = synth.bird_position((ev["frame_seq"] - 1) / 30, roi, sprite_wh)
         assert iou(ev["bbox_xywh"], (x, y, *sprite_wh)) > 0.3, json.dumps(ev)
+
+
+@pytest.mark.slow
+def test_real_clip_is_logged_as_a_visit(tmp_path) -> None:
+    """The real hummingbird clip (scripts/fetch_real_clip.py; not in the
+    repository), with its committed ROI and the default config: at least one
+    visit, confirmed on at least 5 gated frames."""
+    if not fetch.OUT.exists():
+        pytest.skip("real clip not fetched: python scripts/fetch_real_clip.py")
+    if not (ROOT / "yolov8n.pt").exists():
+        pytest.skip("yolov8n.pt not present (ultralytics would download it)")
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "main.py"), "--source", str(fetch.OUT), "--headless",
+         "--no-pace", "--yes", "--log-dir", str(tmp_path / "logs"), "--roi-file", str(fetch.ROI),
+         "--config", str(write_test_config(tmp_path))],
+        cwd=ROOT, capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    events = read_log(tmp_path / "data" / "events.jsonl")
+    assert len(events) >= 1
+    assert max(ev["visit_frames"] for ev in events) >= 5, json.dumps(events)
+    assert all(ev["class"] == "bird" for ev in events)
