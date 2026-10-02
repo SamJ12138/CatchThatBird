@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Optional, Protocol, Sequence
@@ -39,6 +40,19 @@ def _contains(xyxy: tuple[int, int, int, int], box: ROI) -> bool:
     return x0 <= x and y0 <= y and x + w <= x1 and y + h <= y1
 
 
+def _intersects(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    """Two (x0, y0, x1, y1) rectangles share at least one pixel."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _center_within(xyxy: tuple[int, int, int, int], box: ROI, reach: float) -> bool:
+    """The crop's centre is within reach x max(w, h) of the box's centre."""
+    x, y, w, h = box
+    dx = (xyxy[0] + xyxy[2]) / 2 - (x + w / 2)
+    dy = (xyxy[1] + xyxy[3]) / 2 - (y + h / 2)
+    return math.hypot(dx, dy) <= reach * max(w, h)
+
+
 @dataclass(frozen=True)
 class Detection:
     class_name: str
@@ -47,6 +61,16 @@ class Detection:
     frame_seq: int
     captured_wall_time: float              # Frame.captured_wall_time (capture moment)
     crop_xyxy: tuple[int, int, int, int] = (0, 0, 0, 0)  # padded predictor crop, full-frame
+
+
+@dataclass
+class _Recheck:
+    """A motion crop YOLO found nothing in, classified again on the following
+    frames and kept out of the MOG2 update meanwhile (R2)."""
+    xyxy: tuple[int, int, int, int]  # the rejected crop, full-frame
+    started_seq: int
+    frames: int = 0                  # frames processed since the rejected one
+    yolo_calls: int = 0
 
 
 def _dedupe(detections: list["Detection"], threshold: float = 0.5) -> list["Detection"]:
@@ -149,6 +173,8 @@ class Detector:
     """Two-stage gating:
       every frame  -> MOG2 background subtraction on ROI region (or full frame)
       every N-th   -> motion contour gate -> crop+pad -> predictor -> class/conf filter
+      after a motion crop the predictor found nothing in -> that crop again on
+                      the next recheck_window_frames frames (the re-check window)
 
     The predictor defaults to YoloPredictor(config.yolo_model); tests inject a fake.
 
@@ -204,10 +230,13 @@ class Detector:
         self._frame_count = 0
         self._warmup_logged = False
         self._background: Optional[np.ndarray] = None  # MOG2 background, refreshed per gated frame
+        self._recheck: Optional[_Recheck] = None       # the open re-check window, if any
+        self._motion_burst = False   # motion that was no bird, on every gated frame since a quiet one
         self.last_motion_area = 0.0  # largest contour on the last gated frame (for tests)
         self._motion_gates_opened = 0
         self._yolo_invocations = 0
         self._detections_total = 0
+        self._recheck_windows = 0
 
         self._mog2_counter = obs.counter("mog2_apply")
         self._gate_counter = obs.counter("gate_check")
@@ -269,7 +298,16 @@ class Detector:
         `tracks` (full-frame x, y, w, h) are also kept out of the MOG2 update:
         their padded boxes are replaced with the model's own background image
         before apply(), so a bird that sits still is never learned into the
-        background. Returns [] when nothing qualifies."""
+        background.
+
+        A motion crop in which YOLO found nothing opens a re-check window
+        (R2): for recheck_window_frames frames that crop is kept out of the
+        MOG2 update the same way, and on every recheck_every_n_frames-th of
+        them YOLO runs on it again ("recheck" crop), gated or not. A bird
+        that was blurred in flight on the gated frame is then found as soon
+        as it can be, before the background has learned it. The window ends
+        when a bird is found or its frames are used up. Returns [] when
+        nothing qualifies."""
         if self._roi is not None:
             rx, ry, rw, rh = self._roi
             region = frame.image[ry:ry + rh, rx:rx + rw]
@@ -288,12 +326,16 @@ class Detector:
             # is not refreshed while a visit is open, because the frames just
             # before the visit opened already taught the model part of the bird.
             self._background = self._mog2.getBackgroundImage()
+        recheck = self._recheck
+        frozen = [_padded_xyxy(box, pad, frame.image.shape) for box in tracks]
+        if recheck is not None:
+            frozen.append(recheck.xyxy)
         update = region
-        if tracks and self._background is not None:
+        if frozen and self._background is not None:
             update = region.copy()
-            for x, y, w, h in tracks:
-                x0, y0 = max(0, x - rx - pad), max(0, y - ry - pad)
-                x1, y1 = min(rw, x - rx + w + pad), min(rh, y - ry + h + pad)
+            for fx0, fy0, fx1, fy1 in frozen:
+                x0, y0 = max(0, fx0 - rx), max(0, fy0 - ry)
+                x1, y1 = min(rw, fx1 - rx), min(rh, fy1 - ry)
                 if x1 > x0 and y1 > y0:
                     update[y0:y1, x0:x1] = self._background[y0:y1, x0:x1]
         t0 = time.perf_counter()
@@ -333,26 +375,93 @@ class Detector:
         # Cadence counts from the end of warm-up: the first frame after it is
         # gated, then every Nth (warm-up 60, N 30 -> 61, 91, 121 ...).
         since_warmup = self._frame_count - self._config.motion_warmup_frames - 1
-        if since_warmup % self._config.process_every_n_frames != 0:
-            self._gate_counter.record("skip", frame_seq=seq, reason="cadence")
-            return []
-        self._gate_counter.record("success", frame_seq=seq)
+        tick = since_warmup % self._config.process_every_n_frames == 0
+        recheck_due = False
+        if recheck is not None:
+            recheck.frames += 1
+            recheck_due = recheck.frames % self._config.recheck_every_n_frames == 0
+        if tick:
+            self._gate_counter.record("success", frame_seq=seq)
+        else:
+            self._gate_counter.record("skip", frame_seq=seq,
+                                      reason="recheck" if recheck_due else "cadence")
 
         crops: list[tuple[str, tuple[int, int, int, int]]] = []
-        motion_xyxy = self._motion_crop(frame, fg_mask, (rx, ry), pad)
-        if motion_xyxy is not None:
-            crops.append(("motion", motion_xyxy))
-        for box in tracks:
-            if motion_xyxy is not None and _contains(motion_xyxy, box):
-                continue  # the motion crop already shows this bird
-            crops.append(("track", _padded_xyxy(box, pad, frame.image.shape)))
+        motion_xyxy = None
+        if tick:
+            motion_xyxy = self._motion_crop(frame, fg_mask, (rx, ry), pad)
+            if motion_xyxy is not None:
+                crops.append(("motion", motion_xyxy))
+            for box in tracks:
+                if motion_xyxy is not None and _contains(motion_xyxy, box):
+                    continue  # the motion crop already shows this bird
+                crops.append(("track", _padded_xyxy(box, pad, frame.image.shape)))
+        if recheck is not None and recheck_due:
+            crops.append(("recheck", recheck.xyxy))
+            recheck.yolo_calls += 1
 
         detections: list[Detection] = []
+        found_in: set[str] = set()
         for kind, xyxy in crops:
-            detections += self._classify(frame, kind, xyxy)
+            found = self._classify(frame, kind, xyxy)
+            if found:
+                found_in.add(kind)
+            detections += found
         detections = _dedupe(detections)
         self._detections_total += len(detections)
+
+        if recheck is not None:
+            self._end_recheck(recheck, seq, found=bool(found_in & {"motion", "recheck"}))
+        # One window per burst of motion. Steady motion that is no bird is
+        # rejected on every gated frame; it must not hold a window open, and
+        # its region frozen, for as long as it lasts. The next window can
+        # open only after a gated frame on which nothing moved.
+        if tick and recheck is not None:
+            self._motion_burst = True
+        elif tick and motion_xyxy is None:
+            self._motion_burst = False
+        elif tick and "motion" not in found_in and not self._belongs_to_a_visit(
+                motion_xyxy, tracks, frozen):
+            # Motion that was no bird, and not an open visit's bird either.
+            if not self._motion_burst and self._config.recheck_window_frames > 0:
+                self._recheck = _Recheck(motion_xyxy, seq)
+                self._recheck_windows += 1
+                self._obs.emit(
+                    "recheck", "start", frame_seq=seq,
+                    context={"crop_xyxy": list(motion_xyxy),
+                             "window_frames": self._config.recheck_window_frames,
+                             "every_n_frames": self._config.recheck_every_n_frames},
+                )
+            self._motion_burst = True
         return detections
+
+    def _belongs_to_a_visit(
+        self, motion_xyxy: tuple[int, int, int, int], tracks: Sequence[ROI],
+        track_crops: Sequence[tuple[int, int, int, int]],
+    ) -> bool:
+        """A rejected motion crop that a window is not worth opening for: it
+        touches an open visit's track crop (a part of that bird outside its
+        box, R3), or lies so near the visit that a bird found in it would
+        join that visit (visit_center_distance, P10) and not open one."""
+        return any(
+            _intersects(motion_xyxy, crop)
+            or _center_within(motion_xyxy, box, self._config.visit_center_distance)
+            for box, crop in zip(tracks, track_crops)
+        )
+
+    def _end_recheck(self, recheck: _Recheck, seq: int, *, found: bool) -> None:
+        """Close the window if a bird was found (its visit takes over as a
+        track) or its frames are used up."""
+        if not found and recheck.frames < self._config.recheck_window_frames:
+            return
+        self._recheck = None
+        context = {"started_frame_seq": recheck.started_seq, "frames": recheck.frames,
+                   "yolo_calls": recheck.yolo_calls}
+        if found:
+            self._obs.emit("recheck", "success", frame_seq=seq, context=context)
+        else:
+            self._obs.emit("recheck", "skip", frame_seq=seq,
+                           context={"reason": "expired", **context})
 
     def _motion_crop(
         self, frame: Frame, fg_mask: np.ndarray, offset: tuple[int, int], pad: int,
@@ -459,4 +568,5 @@ class Detector:
             "motion_gates_opened": self._motion_gates_opened,
             "yolo_invocations": self._yolo_invocations,
             "detections_total": self._detections_total,
+            "recheck_windows": self._recheck_windows,
         }

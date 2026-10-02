@@ -17,6 +17,8 @@ detection:
   visit_iou_threshold: 0.3          # a detection joins an open visit if IoU >= this ...
   visit_center_distance: 2.0        # ... or its centre is within this x max(w, h) of the last box
   max_visit_seconds: 600            # a longer visit is written as truncated and a new one opens
+  recheck_window_frames: 30         # motion that YOLO rejected is re-checked on this many following frames (0 = off)
+  recheck_every_n_frames: 1         # ... on every Nth of them (1 = every frame)
 
 logging:
   events_file: data/events.jsonl

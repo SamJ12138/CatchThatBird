@@ -148,30 +148,34 @@ def yolo_calls_per_seq(obs) -> dict[int, Counter]:
 
 def test_yolo_call_rate_with_and_without_an_open_visit(tmp_path, obs) -> None:
     """Gated frames every 5th (3, 8, 13 ...). A distractor moves along the top
-    all the time; the fake never calls it a bird. A still bird lands at frame
-    20. Before it: one motion crop per gated frame. With its visit open: the
-    motion crop plus the track crop, never more than 2."""
+    all the time; the fake never calls it a bird. Its first rejected motion
+    crop (frame 3) opens the one re-check window (frames 4-33, R2,
+    tests/test_recheck.py). After that: one motion crop per gated frame. A
+    still bird lands at frame 50. With its visit open: the motion crop plus
+    the track crop, never more than 2."""
     bird = (200, 170, 30, 30)
-    fake = FakePredictor(boxes(range(20, 61), bird), within_crop=True)
+    fake = FakePredictor(boxes(range(50, 91), bird), within_crop=True)
     images = []
-    for seq in range(1, 61):
-        blocks = [((seq * 7) % 250, 10, 20)]
-        if seq >= 20:
+    for seq in range(1, 91):
+        blocks = [((seq * 7) % 250, 10 + 30 * (seq * 7 // 250), 20)]   # a new row each pass
+        if seq >= 50:
             blocks.append((200, 170, 30))
         images.append(image(*blocks))
 
     events, _, _ = run(tmp_path, obs, fake, images, process_every_n_frames=5)
     calls = yolo_calls_per_seq(obs)
 
-    gated = set(range(3, 61, 5))
-    assert set(calls) <= gated                                   # YOLO only on gated frames
-    before = [s for s in gated if s < 23]
-    after = [s for s in gated if s > 23]                         # visit opened on frame 23
+    gated = set(range(3, 91, 5))
+    window = set(range(4, 34))
+    assert {s for s in calls if calls[s]["recheck"]} == window
+    assert set(calls) <= gated | window                          # otherwise only on gated frames
+    before = [s for s in gated if 33 < s < 53]
+    after = [s for s in gated if s > 53]                         # visit opened on frame 53
     assert all(sum(calls[s].values()) == 1 and calls[s]["motion"] == 1 for s in before)
     assert all(sum(calls[s].values()) <= 2 for s in after)
     assert all(calls[s]["track"] == 1 for s in after)
     (ev,) = events
-    assert ev["frame_seq"] == 23 and ev["visit_frames"] == len(after) + 1
+    assert ev["frame_seq"] == 53 and ev["visit_frames"] == len(after) + 1
 
 
 def test_main_sends_open_visits_to_the_detector(synth_video_2s, tmp_path, fake_predictor) -> None:

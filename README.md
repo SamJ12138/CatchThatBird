@@ -259,6 +259,8 @@ All settings are in `config.yaml`. Unknown keys and wrong types stop the program
 | `detection.visit_iou_threshold` | `0.3` | A detection joins an open visit if its box overlaps the visit's last box by at least this IoU ... |
 | `detection.visit_center_distance` | `2.0` | ... or if its centre is within this many times max(width, height) of the last box's centre |
 | `detection.max_visit_seconds` | `600` | A visit this long is written with `"truncated": true`, and the next confirmation opens a new one |
+| `detection.recheck_window_frames` | `30` | When YOLO finds no bird in a gated frame's motion crop, it re-checks that crop on up to this many following frames (about 1 s), and the crop is kept out of the background model meanwhile. `0` turns the re-check off |
+| `detection.recheck_every_n_frames` | `1` | Within that window, YOLO runs on every Nth frame (`1`: every frame) |
 | `logging.events_file` | `data/events.jsonl` | Where visits are appended |
 | `logging.snapshots_dir` | `data/snapshots` | Where snapshots are written |
 | `logging.snapshot_format` | `jpeg` | `jpeg` or `png` |
@@ -330,7 +332,7 @@ python scripts/failure_report.py logs/run_<run_id>.jsonl
 ```
 python -m pip install -r requirements-dev.txt
 python -m pytest -m "not slow"          # the fast suite: no camera, no YOLO
-python -m pytest                        # adds the three tests that load the real yolov8n.pt
+python -m pytest                        # adds the five tests that load the real yolov8n.pt
 python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
@@ -347,7 +349,7 @@ python scripts/make_demo_gif.py --source data/samples/real/hummingbird_feeder.mp
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
-The `slow` marker covers three tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, and a run on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it) that must log a visit confirmed on at least 5 gated frames. Everything else uses test doubles from `tests/fakes.py`:
+The `slow` marker covers five tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, and three runs on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it). Those must log a visit confirmed on at least 5 gated frames, and open it within 0.5 s of the bird's arrival: once with the gated frames forced onto the frames where the bird is blurred, and in three runs paced like a camera (about a minute). Everything else uses test doubles from `tests/fakes.py`:
 
 - **`FakePredictor`** stands in for YOLO. The detector reaches YOLO only through a small `Predictor` protocol (`load()`, `predict()`, `names`), so a test passes the fake in:
 
