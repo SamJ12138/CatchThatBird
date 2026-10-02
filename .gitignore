@@ -12,6 +12,8 @@ snap_*.jpg
 logs/
 data/samples/*
 !data/samples/assets/
+!data/samples/real/
+data/samples/real/*.mp4
 
 # Per-machine ROI (drawn with the dialog); data/roi.example.json is tracked
 data/roi.json

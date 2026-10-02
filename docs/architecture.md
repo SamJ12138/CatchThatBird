@@ -27,6 +27,7 @@ This document covers the module graph, the threading model, the two-stage detect
    scripts/make_synth_video.py   synthetic clip for --source runs: a real bird photo, or a blob
    scripts/failure_report.py     summarises logs/run_<id>.jsonl (stdlib only)
    scripts/make_demo_gif.py      docs/demo.gif from main.py --annotate-out and events.jsonl
+   scripts/fetch_real_clip.py    downloads the real bird clip (Pixabay) into data/samples/real/
    tests/fakes.py                FakeCapture, FakeDevice, FakePredictor, FakeClock
 ```
 
