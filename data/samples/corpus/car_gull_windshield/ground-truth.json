@@ -6,7 +6,7 @@
   "frames": 238,
   "duration_s": 7.94,
   "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
-  "camera": "handheld: drift up to 108 px",
+  "camera": "handheld: pans right; the bird's box moves about 300 px over the clip (tracked corners report 108 px; the hood is too smooth to track)",
   "notes": "One gull on a car hood from the first frame to the last; ivy leaves in the foreground at 0-1 s.",
   "birds": [
     {
@@ -20,7 +20,49 @@
         295,
         278
       ],
-      "notes": "young gull sitting on the hood at the windshield, still for the whole clip"
+      "positions": [
+        {
+          "from_s": 0,
+          "to_s": 1,
+          "box": [
+            515,
+            452,
+            295,
+            278
+          ]
+        },
+        {
+          "from_s": 2,
+          "to_s": 4,
+          "box": [
+            620,
+            452,
+            300,
+            278
+          ]
+        },
+        {
+          "from_s": 5,
+          "to_s": 5,
+          "box": [
+            720,
+            452,
+            320,
+            278
+          ]
+        },
+        {
+          "from_s": 6,
+          "to_s": 7,
+          "box": [
+            800,
+            440,
+            360,
+            290
+          ]
+        }
+      ],
+      "notes": "young gull sitting on the hood at the windshield, still for the whole clip; the camera pans, so its box moves right by about 300 px"
     }
   ],
   "count_per_second": [

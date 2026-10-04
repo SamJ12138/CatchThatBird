@@ -20,6 +20,28 @@
         234,
         144
       ],
+      "positions": [
+        {
+          "from_s": 0,
+          "to_s": 7,
+          "box": [
+            331,
+            703,
+            234,
+            144
+          ]
+        },
+        {
+          "from_s": 8,
+          "to_s": 23,
+          "box": [
+            330,
+            770,
+            520,
+            130
+          ]
+        }
+      ],
       "notes": "pale chickadee-like bird: left rim 0-7 s, then bathing in the middle 8-23 s"
     },
     {
@@ -32,6 +54,28 @@
         622,
         171,
         108
+      ],
+      "positions": [
+        {
+          "from_s": 0,
+          "to_s": 7,
+          "box": [
+            600,
+            620,
+            350,
+            260
+          ]
+        },
+        {
+          "from_s": 8,
+          "to_s": 16,
+          "box": [
+            975,
+            700,
+            200,
+            170
+          ]
+        }
       ],
       "notes": "chickadee: hops on the chain and bathes 0-7 s, then on the right corner of the rim 8-16 s; leaves at 16 s"
     },
@@ -46,6 +90,28 @@
         140,
         243
       ],
+      "positions": [
+        {
+          "from_s": 12,
+          "to_s": 12,
+          "box": [
+            230,
+            450,
+            150,
+            270
+          ]
+        },
+        {
+          "from_s": 13,
+          "to_s": 36,
+          "box": [
+            180,
+            640,
+            200,
+            280
+          ]
+        }
+      ],
       "notes": "male goldfinch: flies in at 12 s (blurred), perches on the left rim 13-35 s, flies off at 36 s"
     },
     {
@@ -59,6 +125,28 @@
         209,
         176
       ],
+      "positions": [
+        {
+          "from_s": 22,
+          "to_s": 56,
+          "box": [
+            579,
+            66,
+            209,
+            176
+          ]
+        },
+        {
+          "from_s": 57,
+          "to_s": 59,
+          "box": [
+            450,
+            300,
+            300,
+            300
+          ]
+        }
+      ],
       "notes": "female goldfinch at the top of the chain, out of focus; climbs down the chain at 57-59 s and is gone at 60 s"
     },
     {
@@ -71,6 +159,28 @@
         660,
         110,
         99
+      ],
+      "positions": [
+        {
+          "from_s": 37,
+          "to_s": 43,
+          "box": [
+            480,
+            640,
+            350,
+            180
+          ]
+        },
+        {
+          "from_s": 44,
+          "to_s": 50,
+          "box": [
+            300,
+            780,
+            450,
+            100
+          ]
+        }
       ],
       "notes": "chickadee: lands on the back rim at 37 s, bathes 44-50 s"
     },

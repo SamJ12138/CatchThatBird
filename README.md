@@ -337,7 +337,7 @@ python scripts/failure_report.py logs/run_<run_id>.jsonl
 ```
 python -m pip install -r requirements-dev.txt
 python -m pytest -m "not slow"          # the fast suite: no camera, no YOLO
-python -m pytest                        # adds the six tests that load the real yolov8n.pt
+python -m pytest                        # adds the 14 tests that load the real yolov8n.pt
 python -m pytest -m "not slow" --cov    # with coverage, as CI runs it
 python scripts/make_demo_gif.py         # regenerate docs/demo.gif
 ```
@@ -354,7 +354,7 @@ python scripts/make_demo_gif.py --source data/samples/real/hummingbird_feeder.mp
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
-The `slow` marker covers six tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, and four on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it). Those must log a visit confirmed on at least 5 gated frames, and open it on the bird's arrival: within 0.5 s in three runs paced like a camera (about a minute), and, with the gated frames forced onto the frames where the bird is blurred, by 3.6 s with the default re-check and by 3.5 s with every frame re-checked. Everything else uses test doubles from `tests/fakes.py`:
+The `slow` marker covers 14 tests that run the real model in a subprocess: a smoke test on the blob clip, a check that the synthetic bird is detected where the script drew it, four on the real clip (skipped until `python scripts/fetch_real_clip.py` has downloaded it), and one paced run of each of the eight corpus clips, which must be no worse than [docs/corpus-baseline.md](docs/corpus-baseline.md) (skipped until `python scripts/fetch_clips.py` has downloaded them). The real-clip tests must log a visit confirmed on at least 5 gated frames, and open it on the bird's arrival: within 0.5 s in three runs paced like a camera (about a minute), and, with the gated frames forced onto the frames where the bird is blurred, by 3.6 s with the default re-check and by 3.5 s with every frame re-checked. Everything else uses test doubles from `tests/fakes.py`:
 
 - **`FakePredictor`** stands in for YOLO. The detector reaches YOLO only through a small `Predictor` protocol (`load()`, `predict()`, `names`), so a test passes the fake in:
 

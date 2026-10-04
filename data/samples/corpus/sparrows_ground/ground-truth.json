@@ -20,6 +20,58 @@
         350,
         187
       ],
+      "positions": [
+        {
+          "from_s": 3,
+          "to_s": 5,
+          "box": [
+            1345,
+            548,
+            350,
+            187
+          ]
+        },
+        {
+          "from_s": 6,
+          "to_s": 11,
+          "box": [
+            1250,
+            520,
+            450,
+            260
+          ]
+        },
+        {
+          "from_s": 12,
+          "to_s": 17,
+          "box": [
+            1150,
+            480,
+            400,
+            220
+          ]
+        },
+        {
+          "from_s": 18,
+          "to_s": 23,
+          "box": [
+            800,
+            500,
+            550,
+            450
+          ]
+        },
+        {
+          "from_s": 24,
+          "to_s": 38,
+          "box": [
+            650,
+            750,
+            650,
+            320
+          ]
+        }
+      ],
       "notes": "male (orange breast) enters at the right edge at 3 s, lands by 4 s, stays"
     },
     {
@@ -32,6 +84,48 @@
         168,
         235,
         184
+      ],
+      "positions": [
+        {
+          "from_s": 6,
+          "to_s": 11,
+          "box": [
+            1050,
+            160,
+            450,
+            280
+          ]
+        },
+        {
+          "from_s": 12,
+          "to_s": 17,
+          "box": [
+            480,
+            200,
+            690,
+            260
+          ]
+        },
+        {
+          "from_s": 18,
+          "to_s": 26,
+          "box": [
+            450,
+            150,
+            480,
+            320
+          ]
+        },
+        {
+          "from_s": 27,
+          "to_s": 38,
+          "box": [
+            0,
+            180,
+            620,
+            300
+          ]
+        }
       ],
       "notes": "female (brown) first seen at 6 s on the upper ground, stays; near the left edge at 36-38 s"
     }

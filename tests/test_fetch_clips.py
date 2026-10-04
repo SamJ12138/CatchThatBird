@@ -196,6 +196,35 @@ def test_ground_truth_is_complete_and_consistent(clip) -> None:
         assert max(counts) >= 2
 
 
+@pytest.mark.parametrize("clip", fc.CLIPS, ids=lambda c: c.name)
+def test_positions_cover_each_stay(clip) -> None:
+    """Optional coarse positions for a bird that moves: consecutive segments
+    from its first to its last second, each a box inside the frame."""
+    truth = load_truth(clip)
+    for bird in truth["birds"]:
+        segments = bird.get("positions")
+        if not segments:
+            continue
+        assert segments[0]["from_s"] == bird["first_s"], bird["id"]
+        assert segments[-1]["to_s"] == bird["last_s"], bird["id"]
+        for a, b in zip(segments, segments[1:]):
+            assert b["from_s"] == a["to_s"] + 1, bird["id"]
+        for seg in segments:
+            x, y, w, h = seg["box"]
+            assert 0 <= x and 0 <= y and x + w <= truth["width"] and y + h <= truth["height"]
+
+
+@pytest.mark.parametrize("clip", fc.CLIPS, ids=lambda c: c.name)
+def test_every_clip_has_a_roi_for_its_frame(clip) -> None:
+    truth = load_truth(clip)
+    roi = json.loads((fc.CORPUS / clip.name / "roi.json").read_text(encoding="utf-8"))
+    assert (roi["frame_width"], roi["frame_height"]) == (truth["width"], truth["height"])
+    assert roi.get("note"), "say what surface the ROI is"
+    if not roi.get("whole_frame"):
+        assert 0 <= roi["x"] and roi["x"] + roi["w"] <= truth["width"]
+        assert 0 <= roi["y"] and roi["y"] + roi["h"] <= truth["height"]
+
+
 @needs_git
 def test_clips_are_ignored_and_the_oracle_is_not() -> None:
     def ignored(path: str) -> bool:

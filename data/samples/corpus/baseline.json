@@ -1,0 +1,536 @@
+{
+ "measured": "2026-10-04, commit 2b48b9a code (before multi-bird), default config.yaml, 3 paced runs per clip",
+ "tolerance": 1,
+ "max_yolo_per_s_limit": 12,
+ "clips": {
+  "car_mynas": {
+   "runs": [
+    {
+     "run_id": "25059cef",
+     "real": 2,
+     "logged": 2,
+     "missed": 0,
+     "split": 1,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      3,
+      1
+     ],
+     "open_delay_s": [
+      4.97
+     ],
+     "yolo_calls": 20,
+     "max_yolo_per_s": 6,
+     "frames_processed": 213,
+     "frames_skipped": 141
+    },
+    {
+     "run_id": "10957e06",
+     "real": 2,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      5
+     ],
+     "open_delay_s": [
+      4.87
+     ],
+     "yolo_calls": 20,
+     "max_yolo_per_s": 5,
+     "frames_processed": 214,
+     "frames_skipped": 140
+    },
+    {
+     "run_id": "48591085",
+     "real": 2,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      5
+     ],
+     "open_delay_s": [
+      4.63
+     ],
+     "yolo_calls": 20,
+     "max_yolo_per_s": 5,
+     "frames_processed": 225,
+     "frames_skipped": 129
+    }
+   ]
+  },
+  "car_gull_windshield": {
+   "runs": [
+    {
+     "run_id": "ef751f50",
+     "real": 1,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      4
+     ],
+     "open_delay_s": [
+      2.6
+     ],
+     "yolo_calls": 8,
+     "max_yolo_per_s": 2,
+     "frames_processed": 170,
+     "frames_skipped": 67
+    },
+    {
+     "run_id": "cf1e9b89",
+     "real": 1,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      2
+     ],
+     "open_delay_s": [
+      5.01
+     ],
+     "yolo_calls": 14,
+     "max_yolo_per_s": 5,
+     "frames_processed": 145,
+     "frames_skipped": 92
+    },
+    {
+     "run_id": "8f806be9",
+     "real": 1,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      3
+     ],
+     "open_delay_s": [
+      2.27
+     ],
+     "yolo_calls": 17,
+     "max_yolo_per_s": 6,
+     "frames_processed": 163,
+     "frames_skipped": 74
+    }
+   ]
+  },
+  "sparrows_ground": {
+   "runs": [
+    {
+     "run_id": "f446113a",
+     "real": 2,
+     "logged": 3,
+     "missed": 0,
+     "split": 1,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      12,
+      6,
+      1
+     ],
+     "open_delay_s": [
+      0.47,
+      12.23
+     ],
+     "yolo_calls": 52,
+     "max_yolo_per_s": 3,
+     "frames_processed": 694,
+     "frames_skipped": 448
+    },
+    {
+     "run_id": "81ad2e00",
+     "real": 2,
+     "logged": 3,
+     "missed": 0,
+     "split": 2,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      16,
+      8,
+      1
+     ],
+     "open_delay_s": [
+      0.57
+     ],
+     "yolo_calls": 64,
+     "max_yolo_per_s": 7,
+     "frames_processed": 695,
+     "frames_skipped": 447
+    },
+    {
+     "run_id": "1a0dcfc8",
+     "real": 2,
+     "logged": 5,
+     "missed": 0,
+     "split": 3,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      12,
+      3,
+      1,
+      1,
+      2
+     ],
+     "open_delay_s": [
+      0.27,
+      28.7
+     ],
+     "yolo_calls": 55,
+     "max_yolo_per_s": 3,
+     "frames_processed": 720,
+     "frames_skipped": 422
+    }
+   ]
+  },
+  "bird_bath": {
+   "runs": [
+    {
+     "run_id": "e57ccf13",
+     "real": 6,
+     "logged": 3,
+     "missed": 1,
+     "split": 0,
+     "merged": 2,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      4,
+      16,
+      16
+     ],
+     "open_delay_s": [
+      11.21,
+      1.45,
+      1.99
+     ],
+     "yolo_calls": 145,
+     "max_yolo_per_s": 9,
+     "frames_processed": 1525,
+     "frames_skipped": 273
+    },
+    {
+     "run_id": "002afddb",
+     "real": 6,
+     "logged": 4,
+     "missed": 1,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      4,
+      13,
+      3,
+      2
+     ],
+     "open_delay_s": [
+      11.21,
+      1.45,
+      27.68,
+      9.21
+     ],
+     "yolo_calls": 117,
+     "max_yolo_per_s": 6,
+     "frames_processed": 1557,
+     "frames_skipped": 241
+    },
+    {
+     "run_id": "4c755188",
+     "real": 6,
+     "logged": 5,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      3,
+      10,
+      17,
+      1,
+      2
+     ],
+     "open_delay_s": [
+      11.18,
+      2.65,
+      2.19,
+      10.61,
+      0.53
+     ],
+     "yolo_calls": 144,
+     "max_yolo_per_s": 6,
+     "frames_processed": 1536,
+     "frames_skipped": 262
+    }
+   ]
+  },
+  "doves_rain": {
+   "runs": [
+    {
+     "run_id": "7c27922a",
+     "real": 2,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      8
+     ],
+     "open_delay_s": [
+      7.91
+     ],
+     "yolo_calls": 30,
+     "max_yolo_per_s": 6,
+     "frames_processed": 485,
+     "frames_skipped": 56
+    },
+    {
+     "run_id": "17a7ebb2",
+     "real": 2,
+     "logged": 1,
+     "missed": 1,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      5
+     ],
+     "open_delay_s": [
+      9.11
+     ],
+     "yolo_calls": 31,
+     "max_yolo_per_s": 6,
+     "frames_processed": 488,
+     "frames_skipped": 53
+    },
+    {
+     "run_id": "bf7cbf16",
+     "real": 2,
+     "logged": 1,
+     "missed": 1,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      4
+     ],
+     "open_delay_s": [
+      9.08
+     ],
+     "yolo_calls": 31,
+     "max_yolo_per_s": 6,
+     "frames_processed": 488,
+     "frames_skipped": 53
+    }
+   ]
+  },
+  "pigeon_stairs": {
+   "runs": [
+    {
+     "run_id": "c7450656",
+     "real": 2,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      3
+     ],
+     "open_delay_s": [
+      6.77
+     ],
+     "yolo_calls": 41,
+     "max_yolo_per_s": 7,
+     "frames_processed": 682,
+     "frames_skipped": 70
+    },
+    {
+     "run_id": "3d48f312",
+     "real": 2,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      17
+     ],
+     "open_delay_s": [
+      6.81
+     ],
+     "yolo_calls": 47,
+     "max_yolo_per_s": 6,
+     "frames_processed": 673,
+     "frames_skipped": 79
+    },
+    {
+     "run_id": "08e40cff",
+     "real": 2,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 1,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      2
+     ],
+     "open_delay_s": [
+      6.84
+     ],
+     "yolo_calls": 41,
+     "max_yolo_per_s": 6,
+     "frames_processed": 682,
+     "frames_skipped": 70
+    }
+   ]
+  },
+  "silhouette_dusk": {
+   "runs": [
+    {
+     "run_id": "f5c83ad5",
+     "real": 1,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      21
+     ],
+     "open_delay_s": [
+      6.92
+     ],
+     "yolo_calls": 69,
+     "max_yolo_per_s": 8,
+     "frames_processed": 1079,
+     "frames_skipped": 189
+    },
+    {
+     "run_id": "e0febaf5",
+     "real": 1,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      23
+     ],
+     "open_delay_s": [
+      5.38
+     ],
+     "yolo_calls": 70,
+     "max_yolo_per_s": 7,
+     "frames_processed": 1047,
+     "frames_skipped": 220
+    },
+    {
+     "run_id": "1d1b579e",
+     "real": 1,
+     "logged": 1,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [
+      23
+     ],
+     "open_delay_s": [
+      5.22
+     ],
+     "yolo_calls": 72,
+     "max_yolo_per_s": 6,
+     "frames_processed": 1055,
+     "frames_skipped": 212
+    }
+   ]
+  },
+  "parked_car_rain": {
+   "runs": [
+    {
+     "run_id": "61e6fc2d",
+     "real": 0,
+     "logged": 0,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [],
+     "open_delay_s": [],
+     "yolo_calls": 17,
+     "max_yolo_per_s": 8,
+     "frames_processed": 251,
+     "frames_skipped": 11
+    },
+    {
+     "run_id": "05954f36",
+     "real": 0,
+     "logged": 0,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [],
+     "open_delay_s": [],
+     "yolo_calls": 17,
+     "max_yolo_per_s": 8,
+     "frames_processed": 255,
+     "frames_skipped": 7
+    },
+    {
+     "run_id": "0e17ea58",
+     "real": 0,
+     "logged": 0,
+     "missed": 0,
+     "split": 0,
+     "merged": 0,
+     "false": 0,
+     "on_uncertain": 0,
+     "visit_frames": [],
+     "open_delay_s": [],
+     "yolo_calls": 17,
+     "max_yolo_per_s": 8,
+     "frames_processed": 253,
+     "frames_skipped": 9
+    }
+   ]
+  }
+ }
+}

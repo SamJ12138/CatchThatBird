@@ -33,6 +33,38 @@
         330,
         300
       ],
+      "positions": [
+        {
+          "from_s": 8,
+          "to_s": 8,
+          "box": [
+            1710,
+            750,
+            195,
+            315
+          ]
+        },
+        {
+          "from_s": 9,
+          "to_s": 10,
+          "box": [
+            1260,
+            585,
+            420,
+            300
+          ]
+        },
+        {
+          "from_s": 11,
+          "to_s": 13,
+          "box": [
+            0,
+            330,
+            960,
+            310
+          ]
+        }
+      ],
       "notes": "second pigeon walks in from the bottom right at 8 s, stands beside A at 9-10 s, walks up and out at the left edge by 13 s"
     }
   ],
