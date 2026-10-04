@@ -1,0 +1,168 @@
+{
+  "clip": "bird_bath",
+  "width": 1920,
+  "height": 1080,
+  "fps": 29.97,
+  "frames": 1799,
+  "duration_s": 60.03,
+  "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
+  "camera": "tripod: drift up to 27 px (the bath and the leaves sway; corners on the leaves move)",
+  "notes": "A hanging bird bath; birds come and go all clip long, up to 3 at once. Identities across the bath are judged from position and plumage at 1 fps; a bird that leaves and comes back would be a new entry. The first 60 s of the source video.",
+  "birds": [
+    {
+      "id": "A",
+      "first_s": 0,
+      "last_s": 23,
+      "landing_s": 0,
+      "box_at_landing": [
+        331,
+        703,
+        234,
+        144
+      ],
+      "notes": "pale chickadee-like bird: left rim 0-7 s, then bathing in the middle 8-23 s"
+    },
+    {
+      "id": "B",
+      "first_s": 0,
+      "last_s": 16,
+      "landing_s": 0,
+      "box_at_landing": [
+        655,
+        622,
+        171,
+        108
+      ],
+      "notes": "chickadee: hops on the chain and bathes 0-7 s, then on the right corner of the rim 8-16 s; leaves at 16 s"
+    },
+    {
+      "id": "G",
+      "first_s": 12,
+      "last_s": 36,
+      "landing_s": 13,
+      "box_at_landing": [
+        210,
+        657,
+        140,
+        243
+      ],
+      "notes": "male goldfinch: flies in at 12 s (blurred), perches on the left rim 13-35 s, flies off at 36 s"
+    },
+    {
+      "id": "F",
+      "first_s": 22,
+      "last_s": 59,
+      "landing_s": 22,
+      "box_at_landing": [
+        579,
+        66,
+        209,
+        176
+      ],
+      "notes": "female goldfinch at the top of the chain, out of focus; climbs down the chain at 57-59 s and is gone at 60 s"
+    },
+    {
+      "id": "C",
+      "first_s": 37,
+      "last_s": 50,
+      "landing_s": 37,
+      "box_at_landing": [
+        678,
+        660,
+        110,
+        99
+      ],
+      "notes": "chickadee: lands on the back rim at 37 s, bathes 44-50 s"
+    },
+    {
+      "id": "H",
+      "first_s": 42,
+      "last_s": 42,
+      "landing_s": 42,
+      "box_at_landing": [
+        860,
+        210,
+        120,
+        230
+      ],
+      "notes": "a pale out-of-focus shape crossing the background right of the chain; probably a bird in flight",
+      "uncertain": true
+    },
+    {
+      "id": "D",
+      "first_s": 58,
+      "last_s": 60,
+      "landing_s": 58,
+      "box_at_landing": [
+        216,
+        638,
+        154,
+        264
+      ],
+      "notes": "chickadee arriving at the left rim at 58 s"
+    }
+  ],
+  "count_per_second": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    3,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    1
+  ]
+}

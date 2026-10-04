@@ -1,0 +1,80 @@
+{
+  "clip": "sparrows_ground",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30.0,
+  "frames": 1143,
+  "duration_s": 38.1,
+  "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
+  "camera": "static: drift at most 1 px",
+  "notes": "Empty ground for 3 s, then two sparrows arrive 3 s apart and feed until the end.",
+  "birds": [
+    {
+      "id": "A",
+      "first_s": 3,
+      "last_s": 38,
+      "landing_s": 4,
+      "box_at_landing": [
+        1345,
+        548,
+        350,
+        187
+      ],
+      "notes": "male (orange breast) enters at the right edge at 3 s, lands by 4 s, stays"
+    },
+    {
+      "id": "B",
+      "first_s": 6,
+      "last_s": 38,
+      "landing_s": 6,
+      "box_at_landing": [
+        1225,
+        168,
+        235,
+        184
+      ],
+      "notes": "female (brown) first seen at 6 s on the upper ground, stays; near the left edge at 36-38 s"
+    }
+  ],
+  "count_per_second": [
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ]
+}

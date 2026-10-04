@@ -1,0 +1,36 @@
+{
+  "clip": "car_gull_windshield",
+  "width": 1920,
+  "height": 1080,
+  "fps": 29.97,
+  "frames": 238,
+  "duration_s": 7.94,
+  "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
+  "camera": "handheld: drift up to 108 px",
+  "notes": "One gull on a car hood from the first frame to the last; ivy leaves in the foreground at 0-1 s.",
+  "birds": [
+    {
+      "id": "A",
+      "first_s": 0,
+      "last_s": 7,
+      "landing_s": 0,
+      "box_at_landing": [
+        515,
+        452,
+        295,
+        278
+      ],
+      "notes": "young gull sitting on the hood at the windshield, still for the whole clip"
+    }
+  ],
+  "count_per_second": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ]
+}

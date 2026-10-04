@@ -1,0 +1,67 @@
+{
+  "clip": "pigeon_stairs",
+  "width": 1920,
+  "height": 1080,
+  "fps": 29.97,
+  "frames": 753,
+  "duration_s": 25.13,
+  "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
+  "camera": "static: drift at most 2 px",
+  "notes": "Pedestrians walk up and down the stairs behind the pigeon the whole clip (out of focus), and a dog crosses the background at 20-21 s. Bright sky behind: the birds are backlit.",
+  "birds": [
+    {
+      "id": "A",
+      "first_s": 0,
+      "last_s": 25,
+      "landing_s": 0,
+      "box_at_landing": [
+        1100,
+        600,
+        292,
+        315
+      ],
+      "notes": "pigeon on the bottom step for the whole clip, backlit"
+    },
+    {
+      "id": "B",
+      "first_s": 8,
+      "last_s": 13,
+      "landing_s": 9,
+      "box_at_landing": [
+        1350,
+        585,
+        330,
+        300
+      ],
+      "notes": "second pigeon walks in from the bottom right at 8 s, stands beside A at 9-10 s, walks up and out at the left edge by 13 s"
+    }
+  ],
+  "count_per_second": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ]
+}

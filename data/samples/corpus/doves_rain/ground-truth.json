@@ -1,0 +1,60 @@
+{
+  "clip": "doves_rain",
+  "width": 1920,
+  "height": 1080,
+  "fps": 29.97,
+  "frames": 542,
+  "duration_s": 18.08,
+  "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
+  "camera": "tripod: drift up to 15 px (to 17.5 s; the clip fades to black at the end)",
+  "notes": "Black and white. The clip fades in from black (0 s) and out to black (18 s), so no bird is visible on those frames. Despite the title, rain is not visible in the frames.",
+  "birds": [
+    {
+      "id": "A",
+      "first_s": 1,
+      "last_s": 17,
+      "landing_s": 1,
+      "box_at_landing": [
+        850,
+        545,
+        220,
+        350
+      ],
+      "notes": "spotted dove on the left branch, stays"
+    },
+    {
+      "id": "B",
+      "first_s": 1,
+      "last_s": 8,
+      "landing_s": 1,
+      "box_at_landing": [
+        1175,
+        640,
+        205,
+        235
+      ],
+      "notes": "smaller dove on the right, flies off at 8 s (blurred)"
+    }
+  ],
+  "count_per_second": [
+    0,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "clip": "parked_car_rain",
+  "width": 1920,
+  "height": 1080,
+  "fps": 25.0,
+  "frames": 262,
+  "duration_s": 10.48,
+  "method": "Written by hand from one frame per second (frame round(s * fps) of clip.mp4), viewed with a pixel grid. Not from YOLO or any other detector.",
+  "camera": "handheld or tripod: drift up to 43 px",
+  "notes": "A parked car with its lights on in the rain at dusk, seen through out-of-focus leaves. Rain streaks in front of the headlights. No bird. 8.5-19.0 s of the source video, where the camera is steadiest.",
+  "birds": [],
+  "count_per_second": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+}
