@@ -8,7 +8,7 @@
 
 There is a bird that lives somewhere near my apartment and has been using my car as a toilet for months, always at a time of day I never managed to catch, and I got curious enough about its schedule that I wanted to know exactly when it shows up so I could be sitting in the driver's seat waiting for it one morning and give it the fright of its life. So I pointed my DJI Action 4 at the car as the sensor, wrote a pipeline that watches for motion and asks a small bird detector whether the moving thing is a bird, and started logging every visit with a timestamp and a snapshot. The bird has not been caught yet, but the log is getting longer.
 
-CatchThatBird keeps a passive log of birds visiting a parked car, seen through a webcam (a DJI Osmo Pocket 3 in webcam mode, in the author's setup). It writes one line per visit to `data/events.jsonl`, plus a snapshot of each bird, so visit times can be analysed later. It sends no alerts and records no video. Detection is two-stage so that a laptop CPU is enough. Cheap background subtraction (MOG2) watches a region around the car on every frame, and the YOLOv8n neural network runs only on a small crop around motion, about once a second.
+CatchThatBird keeps a passive log of birds visiting a parked car, seen through a webcam (a DJI Osmo Pocket 3 in webcam mode, in the author's setup). It writes one line per visit to `data/events.jsonl`, plus a snapshot of each bird, so visit times can be analysed later. It sends no alerts and records no video. Detection is two-stage so that a laptop CPU is enough. Cheap background subtraction (MOG2) watches a region around the car on every frame, and the YOLOv8n neural network runs only on small crops around motion and around birds already being tracked, about once a second.
 
 ## Quickstart
 
@@ -219,19 +219,22 @@ The design, the threading model and the measured costs are in [docs/architecture
         |
         |  warm-up done, and the first or every Nth frame after it?  no -> next frame
         v  yes (about once a second)
- morphology, largest contour >= motion_min_area?                    no -> next frame
-        |  yes
+ morphology, contours >= motion_min_area?                           no -> next frame
+        |  yes: padded, overlapping ones merged, the 4 largest regions
         v
- padded crop around the motion -> YOLOv8n, target classes only
-   + for each open visit: padded crop around its last box -> YOLOv8n
-     (every gated frame, motion or not, so a bird that sits still stays confirmed)
-   + if YOLO finds nothing in the motion crop: the same crop again on every third
-     of the next 30 frames, kept out of the background model meanwhile, so a bird
-     that was blurred in flight is found as it lands, before it becomes background
+ for each open visit: padded crop around its last box -> YOLOv8n
+   (every gated frame, motion or not, so a bird that sits still stays confirmed)
+ + one padded crop per motion region -> YOLOv8n, target classes only
+   (at most 5 such calls a second; the rest wait a few frames, logged)
+ + if YOLO finds nothing in a motion region: that crop again on every third
+   of the next 30 frames, kept out of the background model meanwhile, so a bird
+   that was blurred in flight is found as it lands, before it becomes background
         |
         v
- EventLogger: same bird as an open visit (IoU >= 0.3, or centre within 2x its size; within 10 s)?
-        |       yes -> extend the visit      no -> open a visit, save snapshots
+ EventLogger: the frame's birds matched to the open visits, one to one, at the lowest
+   cost (overlap and distance); a pair may match if IoU >= 0.3 or the centre is within
+   2x the visit's box size, within 10 s
+        |       matched -> extend that visit      unmatched -> open a visit, save snapshots
         v
  data/events.jsonl: one line per visit, written when the visit closes
 ```
@@ -241,6 +244,17 @@ The design, the threading model and the measured costs are in [docs/architecture
 - **One visit, the whole perch.** The bird arrived at about 3.0 s and left at 14.0 s. The visit opened at 3.03 s, every one of its 11 gated frames confirmed the bird (`visit_frames` 11), and `last_seen` was 10.7 s after `ts` (13.77 s into the clip). It was never split or lost while the bird sat still.
 - **YOLO rate.** Before the visit there was one gated frame, with no motion large enough, so no call. With the visit open, YOLO ran 25 times in 13.6 s, 1.84 calls/s: 2 per gated frame after the first, one on the track crop and one on the motion crop. While the bird perched, that motion was its bill, which sticks out of its box.
 - **A blurred arrival is re-checked.** In another run of the same clip, before the re-check existed (run_id `c2c24c8d`, with `--annotate-out`), the gated frames fell elsewhere: one on the bird in flight, blurred, and one a second after landing, when the still body had been absorbed into the background and only the wing moved. The visit opened at 5.93 s, 2.9 s late. Since `2cfe133`, the crop YOLO rejected is classified again on the following frames and kept out of the background model. With the gated frames forced onto the same frames, the visit now opens at 3.57 s (run_id `83ae1c57`), where it opened at 5.97 s (run_id `49d65294`). Details: [docs/observations.md](docs/observations.md), "The R2 fix".
+
+**Multiple birds.** Several birds can be in the region at once: each motion region gets its own YOLO crop, and the birds found on a frame are matched to the open visits jointly, so two birds side by side or crossing keep their own visits. Each line carries a `visit_id` and `concurrent_max`, the most visits open at once during it. Measured on eight real clips with ground truth written by hand ([docs/corpus-baseline.md](docs/corpus-baseline.md); three paced runs each, default config, logs in [docs/runs/corpus-multi/](docs/runs/corpus-multi/)):
+
+- **Two mynas touching on a car roof are two visits** in all three runs (run_ids `6da0ba42`, `d504c0e2`, `08a203ed`); before this change they were one visit every time.
+- **Over the 24 runs:** no bird missed (4 before), 9 merged into another bird's visit (12 before), 13 extra visits from split birds (7 before), 1 false visit (none before). The clip that got worse is the bird bath: an out-of-focus goldfinch boxed by YOLO as two side-by-side boxes becomes two visits (split 0-3 per run, run_ids `653b4177`, `c6251709`). The false visit is a branch scored 0.57 on the doves clip (run_id `abbcda9b`).
+- **A bird already there at the start is found sooner:** on the six clips with one, its visit opens a median 3.3 s after its first frame instead of 6.1 s (2.0-6.1 s, was 2.3-11.2 s). The first two seconds teach the background model, bird included.
+- **Cost.** At most 5 YOLO calls start on a gated frame (`detection.max_yolo_calls_per_s`; 63 crops waited a few frames over the 24 runs), 5-9 calls in the busiest second with a re-check window. On 1080p footage every call takes longer than a frame (58 ms against 33 ms), so a paced run skips frames: 6-36 % of them on these clips, against 3-40 % before. Details and the open problems: [docs/observations.md](docs/observations.md), "Multi-bird findings".
+
+![The bird bath clip and the pipeline's annotated preview side by side: a pale bird and a chickadee each get a box and a visit of their own, and a goldfinch that lands later gets a third](docs/demo-multi.gif)
+
+*Several birds at once, rendered from a pipeline run on real footage (run_id `223e111a`, paced, default config): a hanging bird bath with a chickadee, a pale bird and a goldfinch (Pexels video by David Clausen, Pexels License; source in [data/samples/corpus/CREDITS.md](data/samples/corpus/CREDITS.md)). The middle plays at 3x.*
 
 ## Configuration
 
@@ -326,6 +340,13 @@ python scripts/plot_visits.py                      # data/events.jsonl -> docs/v
 python scripts/plot_visits.py path/to/events.jsonl --out visits.png --title "Week 1"
 ```
 
+**Visit report.** `scripts/visit_report.py` prints visits per hour of day, the median visit length, the most birds there at once (visits overlapping in time, and `concurrent_max` where the lines have it) and the busiest hour:
+
+```
+python scripts/visit_report.py                     # data/events.jsonl
+python scripts/visit_report.py path/to/events.jsonl
+```
+
 **Snapshots** are named `<local time>_seq<frame, 6 digits>_d<index>_{crop,full}.jpg`, for example `20260930T140506.789_seq000091_d0_crop.jpg`.
 
 **Run logs.** Every run writes `logs/run_<run_id>.jsonl`, one line per stage event (`start`, `success`, `fail`, `skip`, with an `error_type`). Per-frame stages are summarised every 300 frames. To see what failed or was skipped and how long each stage took:
@@ -355,6 +376,16 @@ python scripts/fetch_real_clip.py
 python main.py --source data/samples/real/hummingbird_feeder.mp4 --roi-file data/samples/real/roi.json --headless --yes --data-root <dir> --log-dir <dir>/logs --annotate-out <dir>/annotated.mp4
 python scripts/make_demo_gif.py --source data/samples/real/hummingbird_feeder.mp4 --annotated <dir>/annotated.mp4 --events <dir>/data/events.jsonl --out docs/demo-real.gif
 ```
+
+`docs/demo-multi.gif` the same way, from the corpus's bird bath clip:
+
+```
+python scripts/fetch_clips.py bird_bath
+python main.py --source data/samples/corpus/bird_bath/clip.mp4 --roi-file data/samples/corpus/bird_bath/roi.json --headless --yes --data-root <dir> --log-dir <dir>/logs --annotate-out <dir>/annotated.mp4
+python scripts/make_demo_gif.py --source data/samples/corpus/bird_bath/clip.mp4 --annotated <dir>/annotated.mp4 --events <dir>/data/events.jsonl --out docs/demo-multi.gif
+```
+
+The corpus measurement (about 11 minutes, one paced run at a time): `python scripts/fetch_clips.py`, then `python scripts/corpus_eval.py --runs 3 --keep-logs <dir>` ([docs/corpus-baseline.md](docs/corpus-baseline.md)).
 
 CI (`.github/workflows/ci.yml`, badge at the top) runs the fast suite with coverage on Ubuntu and Windows, Python 3.12, on every push and pull request.
 
@@ -389,11 +420,12 @@ The suite fails any test that takes more than 5 s, or that calls `time.sleep()` 
 Known limitations:
 
 - **Capture backends are Windows-first.** Device names come from DirectShow, and capture tries DirectShow, then Media Foundation. Video files work on any OS, but live capture on Linux and macOS is untested.
-- **Only the single largest motion contour** in the ROI goes to YOLO on each gated frame. Two birds far apart can yield one detection.
+- **At most 4 motion regions** are classified on a gated frame (`detection.max_motion_regions`), the largest first. Contours whose padded boxes overlap are one region.
 - **CPU-only by default.** A CUDA build of PyTorch speeds up only the YOLO step (see `requirements.txt`).
 - **A hard kill loses at most the last 60 s of an open visit.** The visit itself is recovered on the next start from `data/open_visits.json`, with `"recovered": true`, but `last_seen` and `visit_frames` are as of the last checkpoint.
-- **Two birds close together can merge.** A detection joins an open visit if its centre is within 2x the visit's box size. That keeps a hopping bird in one visit, but two birds perched side by side count as one.
-- **Open visits cost YOLO time.** While a visit is open, each gated frame runs YOLO once per open visit, plus once for motion elsewhere. That continues for up to `dedupe_within_seconds` after the bird has left. Motion from a part of the bird outside its box (the hummingbird's bill on the real clip) counts as motion elsewhere, so a perched bird can cost 2 calls per gated frame.
+- **Two birds close together can still share a visit, and one bird can be two.** The birds on a frame are matched to visits one to one, but a bird that YOLO does not find on a frame lets its neighbour's box take its visit, and one blurred bird boxed twice, side by side, is two visits. On the corpus: 9 birds merged and 13 extra visits from split birds in 24 runs ([docs/corpus-baseline.md](docs/corpus-baseline.md)).
+- **Open visits and motion regions cost YOLO time.** Each gated frame runs YOLO once per open visit and once per motion region, up to `detection.max_yolo_calls_per_s` (5) a second; the rest wait a few frames. Track crops continue for up to `dedupe_within_seconds` after the bird has left. Motion from a part of the bird outside its box (the hummingbird's bill on the real clip) is a region of its own, so a perched bird can cost 2 calls per gated frame.
+- **Each YOLO call skips frames on 1080p footage.** Detection runs on the main thread; a call (about 58 ms on the author's laptop) is longer than a frame interval at 30 fps, so a paced run skips about one frame per call, and about 8 for a gated frame with 5 calls. On the corpus, 6-36 % of frames were skipped.
 - **A re-check window costs YOLO time.** After a gated frame with motion that YOLO rejects, YOLO runs on that crop on every third of the next 30 frames: about 10 calls/s for a second on a laptop CPU, instead of 1. Motion that goes on (a branch, a shadow) opens one window, not one per second. `detection.recheck_every_n_frames: 1` finds the bird about 0.1 s sooner, at 20 calls/s and with one frame in three dropped during the window; `recheck_window_frames: 0` turns the re-check off.
 - **`ts` is the first frame on which YOLO found the bird.** The motion gate looks once a second, so that can be up to a second after the bird came into view, and longer if YOLO cannot make it out during the re-check window.
 - **Anything YOLO keeps calling a bird stays one long visit.** A still object that YOLO scores at or above the threshold (a decoy, say) is written as a truncated visit every `max_visit_seconds` (10 min by default), for as long as it stays.

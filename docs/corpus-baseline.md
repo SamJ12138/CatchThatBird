@@ -46,4 +46,52 @@ What the numbers show:
 - **YOLO rate.** At most 5-9 calls in one second. Over 5, the second holds a re-check window's calls (every third frame for 30 frames, about 10 per window) on top of a gated frame's.
 - **Frames skipped.** The paced loop skips frames whenever a frame takes longer than the frame interval. At 1920x1080 with a large ROI or the whole frame (`sparrows_ground`: whole frame, 37-39 % skipped; `silhouette_dusk`: 50 fps, 15-17 %), MOG2 alone is near the frame interval and every YOLO call drops frames. The handheld clips skip more (mynas 36-40 %): the moving background is motion on every gated frame, which keeps re-check windows and large crops coming.
 
-The slow tests in `tests/test_slow_corpus.py` run each clip once and fail if missed, split, merged or false visits are more than 1 above the most this table shows for that clip, or if any second has more than 12 YOLO calls (`data/samples/corpus/baseline.json`).
+The slow tests in `tests/test_slow_corpus.py` run each clip once and fail if missed, split, merged or false visits are more than 1 above the most the reference runs show for that clip, or if any second has more than 12 YOLO calls (`data/samples/corpus/baseline.json`). The reference was this table until multi-bird tracking; it is now the table below.
+
+## After multi-bird tracking
+
+Code at `ebd40c4`: every motion region classified (up to 4), detections matched to open visits jointly (Hungarian method), visit ids, a budget of 5 YOLO calls per second for the crops gated frames start. Same clips, ROIs, config defaults and scoring; 24 runs on 2026-10-04, CPU load median 18 %, max 43 % (105 samples). Run logs and events in [runs/corpus-multi/](runs/corpus-multi/). `data/samples/corpus/baseline.json` now holds these runs as the slow tests' reference (and the runs above under `before`).
+
+| clip | visits logged / real | missed | split | merged | false | visit_frames per visit (run 1; run 2; run 3) | max YOLO calls/s | frames skipped / in clip | run_ids |
+|---|---|---|---|---|---|---|---|---|---|
+| `car_mynas` | 2 / 2 | 0 | 0-1 | 0-1 | 0 | 7,5; 7,5; 7,4 | 6 | 106-113 / 355 | `6da0ba42`, `d504c0e2`, `08a203ed` |
+| `car_gull_windshield` | 1 / 1 | 0 | 0 | 0 | 0 | 4; 4; 4 | 5 | 59-85 / 238 | `361e5a38`, `5120eb80`, `90db6853` |
+| `sparrows_ground` | 4 / 2 | 0 | 2 | 0 | 0 | 19,4,9,1; 13,3,17,1; 12,5,3,14 | 5-6 | 393-409 / 1143 | `b6287290`, `70329a84`, `5207bd51` |
+| `bird_bath` | 5-8 / 6 | 0 | 0-3 | 1 | 0 | 8,17,7,3,2,6,2; 10,4,15,5,8,2,7,2; 10,6,13,12,1 | 8 | 296-350 / 1799 | `653b4177`, `c6251709`, `c3186178` |
+| `doves_rain` | 1-2 / 2 | 0 | 0 | 1 | 0-1 | 6; 11,1; 10 | 6-7 | 84-92 / 542 | `723fe8ea`, `abbcda9b`, `3c0c431c` |
+| `pigeon_stairs` | 1-2 / 2 | 0 | 0 | 0-1 | 0 | 16,1; 16; 16,2 | 7 | 122-139 / 753 | `4d1fd59e`, `3dc6bde0`, `9fec1631` |
+| `silhouette_dusk` | 1 / 1 | 0 | 0 | 0 | 0 | 25; 25; 25 | 7 | 263-276 / 1268 | `e9d03661`, `40f1a83d`, `0a6986fd` |
+| `parked_car_rain` | 0 / 0 | 0 | 0 | 0 | 0 | none | 9 | 16 / 262 | `0b5e55dd`, `5d344d47`, `571c825e` |
+
+### Before and after
+
+Ranges over the three runs; before at `2b48b9a`, after at `ebd40c4`.
+
+| clip | missed | split | merged | false | first visit opens, s after the bird is first in frame | frames skipped |
+|---|---|---|---|---|---|---|
+| `car_mynas` | 0 → 0 | 0-1 → 0-1 | 1 → 0-1 | 0 → 0 | 4.6-5.0 → 2.1-2.6 | 129-141 → 106-113 |
+| `car_gull_windshield` | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 2.3-5.0 → 2.1-2.2 | 67-92 → 59-85 |
+| `sparrows_ground` | 0 → 0 | 1-3 → 2 | 0-1 → 0 | 0 → 0 | 0.3-0.6 → 0.0-0.4 | 422-448 → 393-409 |
+| `bird_bath` | 0-1 → 0 | **0 → 0-3** | 1-2 → 1 | 0 → 0 | 11.2 → 2.0 | **241-273 → 296-350** |
+| `doves_rain` | 0-1 → 0 | 0 → 0 | 0-1 → 1 | **0 → 0-1** | 7.9-9.1 → 2.6-4.7 | **53-56 → 84-92** |
+| `pigeon_stairs` | 0 → 0 | 0 → 0 | 1 → 0-1 | 0 → 0 | 6.8 → 3.7-6.1 | **70-79 → 122-139** |
+| `silhouette_dusk` | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 5.2-6.9 → 3.9 | **189-220 → 263-276** |
+| `parked_car_rain` | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | no bird | 7-11 → 16 |
+
+What changed:
+
+- **Totals over each set of 24 runs:** missed 4 → 0, merged 12 → 9, split 7 → 13, false 0 → 1.
+- **Better.** No bird missed in any run. Two birds close together are now two visits more often: the mynas in all three runs (they touch; before, one visit every time), the second pigeon in two of three. A bird that is there from the first frame is found sooner: a median 3.3 s after its first frame instead of 6.1 s over the six clips with one (2.0-6.1 s, was 2.3-11.2 s; table above): with every region classified, its small movements are enough. The bath's pale bird, which never had a visit of its own before, is logged at 2.0 s in every run.
+- **Worse, and not tuned away** (`docs/observations.md`, "Multi-bird findings", M1-M3):
+  - **`bird_bath` splits more: 0 → 0-3.** The out-of-focus goldfinch at the top of the chain is sometimes boxed by YOLO as two boxes side by side. They do not overlap, so they are two birds to the association, and two visits; before, the centre rule folded them into one (M1).
+  - **`doves_rain` merges in every run: 0-1 → 1.** Before, the large dove's visit opened at 8.9-10.1 s, after the small dove had flown off at 8 s, and the small dove was merged (one run) or missed (two). Now the small dove's visit opens at 2.6-4.7 s; when it flies off, the large dove's detections join that visit (its centre is 322 px from the small dove's last box, inside the reach of 416 px), so the large dove never has a visit of its own. A visit can pass from one bird to a neighbour that stays (M1).
+  - **`doves_rain` has a false visit in one run** (`abbcda9b`, a 0.57 box on a branch at 10.7 s). With every region classified, YOLO sees crops it never saw before, and a branch scored above the threshold once (M2).
+  - **More frames skipped on five clips**, by up to 8 points of the clip's frames (`pigeon_stairs` 9-10 % → 16-18 %): more YOLO calls per gated frame (M3, below).
+- **Unchanged.** `sparrows_ground` still splits the walking male (2 extra visits per run): it walks more than the visit's reach between gated frames. No false visit on the rainy car.
+- **A caveat on scoring.** A visit is scored by its first box. In two `car_mynas` runs the first visit opened on a box of the far bird's lower body and later carried the near bird; both visits then count for the far bird (split 1, merged 1), although each bird had a visit.
+
+### YOLO budget and frame drops
+
+- **The budget binds on busy frames.** It deferred 63 crops over the 24 runs (bath 39, sparrows 9, mynas 7, pigeon 5, doves 3); each ran a few frames later, as the budget refilled, and none expired. The most YOLO calls on one frame was 5 (6 on the bath, with a re-check). Before, it was 2-4.
+- **Every YOLO call drops frames here.** A call took 57.6 ms (p50, 1661 calls; p95 73.2 ms) and MOG2 20.6 ms per frame (median of the window p50s) on these 1080p regions, against a 33 ms frame interval. A frame with one call is late by about a frame; one with 5 calls (about 290 ms) skips about 8. The loop skipped 3-40 % of a clip's frames before the change and 6-36 % after.
+- **No default was changed.** A lower budget would shorten the bursts but defer more crops; no budget of 1 or more keeps this loop from skipping frames while a call takes longer than a frame interval. Reported in observations M3.

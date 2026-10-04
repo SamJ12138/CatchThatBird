@@ -139,3 +139,24 @@ def test_how_it_works_cites_the_real_clip_run(readme: str) -> None:
 def test_no_fixture_chart_on_the_front_page(readme: str) -> None:
     assert "docs/visits.png" not in readme.replace("-> docs/visits.png", "")
     assert "python scripts/plot_visits.py" in section(readme, "Output")
+
+
+def test_multi_bird_gif_and_paragraph_sit_under_how_it_works(readme: str) -> None:
+    how = section(readme, "How it works")
+    lines = how.splitlines()
+    (i,) = [n for n, l in enumerate(lines) if l.startswith("![") and l.endswith("(docs/demo-multi.gif)")]
+    caption = next(l for l in lines[i + 1:] if l.strip())
+    for needle in ("David Clausen", "Pexels License", "data/samples/corpus/CREDITS.md", "run_id `223e111a`"):
+        assert needle in caption, needle
+    gif = ROOT / "docs" / "demo-multi.gif"
+    assert gif.read_bytes()[:6] == b"GIF89a" and gif.stat().st_size <= 5 * 1024 * 1024
+    assert "**Multiple birds.**" in how and "docs/corpus-baseline.md" in how
+    for run_id in ("d504c0e2", "653b4177", "c6251709", "abbcda9b"):      # cited corpus runs
+        assert f"`{run_id}`" in how, run_id
+        assert (ROOT / "docs" / "runs" / "corpus-multi" / f"run_{run_id}.jsonl").is_file()
+    # the hummingbird stays the headline
+    assert readme.index("(docs/demo-real.gif)") < readme.index("(docs/demo-multi.gif)")
+
+
+def test_visit_report_is_in_output(readme: str) -> None:
+    assert "python scripts/visit_report.py" in section(readme, "Output")

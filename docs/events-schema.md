@@ -1,6 +1,6 @@
 # events.jsonl schema
 
-`logger.EventLogger` appends one JSON object per line to `logging.events_file` (default `data/events.jsonl`). Each line is one **visit**: one line for a bird that stays, hops or is seen only partly, however many detections it produces. A detection joins an open visit of the same class if its box has IoU ≥ `detection.visit_iou_threshold` (0.3) with the visit's latest box, or if its centre is within `detection.visit_center_distance` (2.0) × max(w, h) of that box's centre.
+`logger.EventLogger` appends one JSON object per line to `logging.events_file` (default `data/events.jsonl`). Each line is one **visit**: one line for a bird that stays, hops or is seen only partly, however many detections it produces. A detection joins an open visit of the same class if its box has IoU ≥ `detection.visit_iou_threshold` (0.3) with the visit's latest box, or if its centre is within `detection.visit_center_distance` (2.0) × max(w, h) of that box's centre. When several birds are in the frame, the frame's detections are matched to the open visits jointly, one detection per visit, at the lowest total cost of (1 − IoU) plus the centre distance over that reach (Hungarian method), so two birds side by side or crossing keep their own visits. A detection that matches no visit opens one; a box mostly inside another box of the same frame that joined or opened a visit (the head of a bird beside its whole body) is taken for the same bird.
 
 ## Fields
 
@@ -17,7 +17,9 @@
 | `last_seen` | string | Capture time of the visit's last matching detection (same format as `ts`) |
 | `truncated` | bool | `true` if the visit reached `detection.max_visit_seconds` (600 s) and was cut there. The next confirmation of the bird opens a new visit, so a very long stay is several consecutive lines |
 | `recovered` | bool | `true` if the line was written at startup from `open_visits.json`: the previous run ended without closing the visit (a hard kill). `last_seen` and `visit_frames` are as of the last checkpoint |
-| `visit_frames` | int | Number of frames with a matching detection, ≥ 1. These are gated frames, plus the frame that opened the visit if that was a re-check between two gated frames |
+| `visit_frames` | int | Number of frames with a matching detection, ≥ 1. These are gated frames, plus the frame that opened the visit if that was a re-check between two gated frames, or a frame on which a crop deferred by the YOLO budget ran |
+| `visit_id` | string | `<run_id>-<n>`: the run's nth visit, n from 1. Unique per visit, also when two visits open on the same frame (same `run_id` and `frame_seq`). Added with multi-bird tracking: older lines do not have it |
+| `concurrent_max` | int | The most visits open at once at any moment of this visit, this one included, ≥ 1. Open visits include ones whose bird left less than `dedupe_within_seconds` ago. Older lines do not have it |
 
 Lines are written when a visit **closes**, so they appear in close order. Sort by `ts` for start order.
 
@@ -45,7 +47,7 @@ A signal that arrives while a frame is being detected and persisted is held unti
   - by atomic replace, after an `fsync`
   A clean close removes the file.
 - **Recovery.** If the file exists at startup, its visits are appended to `events.jsonl` with `"recovered": true` before anything else, and the file is deleted. Their `last_seen` and `visit_frames` are those of the last checkpoint.
-- **No duplicates.** A visit already in `events.jsonl` (same `run_id` and `frame_seq`) is skipped. That happens when the kill fell between appending its line and rewriting the checkpoint.
+- **No duplicates.** A visit already in `events.jsonl` (the same `visit_id`, or for lines without one the same `run_id` and `frame_seq`) is skipped. That happens when the kill fell between appending its line and rewriting the checkpoint.
 - **Unreadable file.** An unreadable `open_visits.json` is renamed to `open_visits.json.corrupt` and logged.
 
 Closed visits are already on disk: each line is appended, flushed and `fsync`ed.
@@ -54,3 +56,7 @@ Closed visits are already on disk: each line is appended, flushed and `fsync`ed.
 
 - `storage.max_events_per_day` (500): the first detection of a new visit beyond the cap is dropped. This is logged as `persist` skip `daily_cap` in the run log. Events already in the file for today count toward the cap.
 - `storage.retention_days` (30): at startup, image files in the snapshots directory older than this are deleted. `events.jsonl` is never truncated, so old lines can point at deleted snapshots.
+
+## Older lines
+
+`visit_id` and `concurrent_max` were added with multi-bird tracking (2026-10-04). Lines written before have the other twelve fields only. Everything that reads `events.jsonl` (recovery at startup, `scripts/plot_visits.py`, `scripts/visit_report.py`, `scripts/corpus_eval.py`) accepts both; no existing field changed.

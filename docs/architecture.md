@@ -26,8 +26,11 @@ This document covers the module graph, the threading model, the two-stage detect
 
    scripts/make_synth_video.py   synthetic clip for --source runs: a real bird photo, or a blob
    scripts/failure_report.py     summarises logs/run_<id>.jsonl (stdlib only)
-   scripts/make_demo_gif.py      docs/demo.gif, docs/demo-real.gif from main.py --annotate-out
+   scripts/make_demo_gif.py      docs/demo.gif, docs/demo-real.gif, docs/demo-multi.gif from main.py --annotate-out
    scripts/fetch_real_clip.py    downloads the real bird clip (Pixabay) into data/samples/real/
+   scripts/fetch_clips.py        downloads the eight-clip real-footage corpus into data/samples/corpus/
+   scripts/corpus_eval.py        runs main.py on the corpus and scores it against hand-written ground truth
+   scripts/visit_report.py       visits per hour, median length, most birds at once, busiest hour
    tests/fakes.py                FakeCapture, FakeDevice, FakePredictor, FakeClock
 ```
 
@@ -83,19 +86,27 @@ every picked-up frame
   (frame_count - warmup - 1) % N != 0?  -> skip "cadence"   (gated: 61, 91, 121 ...)
 gated frame (about 1 per second at 30 fps, N = 30)
   morphology open + close (5x5 ellipse)
-  largest external contour >= motion_min_area?  -> "motion" crop
-    (bounding box -> full-frame coords -> pad by motion_padding_px, clamp)
+  every external contour >= motion_min_area -> its bounding box, full-frame coords,
+    padded by motion_padding_px and clamped; padded boxes that share a pixel merged
+    (repeatedly); the max_motion_regions (4) with the largest contour area -> "motion" crops
   each open visit's last box, padded the same way -> "track" crop
-    (motion or not; skipped if the motion crop already contains the box)
+    (motion or not; skipped if a motion region already contains the box)
+  YOLO budget: track crops first, then motion crops by area, while the token bucket
+    (max_yolo_calls_per_s, refilled in capture time) has tokens; the rest are logged as
+    deferred and run on the next frames as tokens refill, until the next gated frame
   YOLOv8n on each crop, target classes only, conf >= threshold
   boxes -> full-frame coords; duplicates across crops (IoU >= 0.5) -> one
-  nothing found in the "motion" crop, no rejected motion since the last gated frame
-    without motion, and the crop is not part of an open visit?
-                                        -> open a re-check window on that crop
+  nothing found in a motion region, no rejected motion since the last gated frame
+    without motion, and the region is not part of an open visit or by a bird found
+    on this frame?                      -> open a re-check window on the largest such region
 EventLogger.handle(frame, detections)       every processed frame, so visits expire on time
-  joins an open visit (same class, within dedupe_within_seconds, and IoU >= 0.3
-    with its last box or centre within 2 x max(w, h) of it)? extend it
-  else open a visit: crop + full-frame snapshot now, line written when it closes
+  cost of each (detection, open visit) pair: (1 - IoU) + centre distance / reach,
+    reach = 2 x max(w, h) of the visit's last box; allowed only for the same class,
+    within dedupe_within_seconds, and IoU >= 0.3 or centre within reach
+  Hungarian assignment, one detection per visit: matched -> extend that visit
+  unmatched and mostly inside a box handled on this frame -> duplicate of that bird
+  unmatched otherwise -> open a visit (visit_id <run_id>-<n>): crop + full-frame snapshot
+    now, line written when it closes; concurrent_max tracked while it is open
 ```
 
 The design choices behind this:
@@ -103,7 +114,9 @@ The design choices behind this:
 - **MOG2 runs on the ROI sub-image, not a masked full frame.** Motion outside the ROI (trees, sky, passers-by) never enters the pipeline, and the per-frame cost scales with the ROI's area (§4).
 - **MOG2 sees every frame; the rest runs every Nth.** A background model fed a thinned sequence adapts worse. Morphology, contours and YOLO are only paid on gated frames.
 - **YOLO sees a padded crop, not the frame.** A small bird fills more of the network's input. The crop is also the snapshot saved with the event.
-- **Only the largest contour goes on.** Two birds that arrive far apart in the same second produce one motion crop. Once the first has an open visit, it is masked out of the motion model, and the second is the motion on a later gated frame if it moves.
+- **Every motion region goes on, up to four (multi-bird, `ebd40c4`).** Until then only the largest contour was classified: two birds that arrived in the same second produced one crop, and a still bird beside a larger moving branch was never looked at. Contours whose padded boxes overlap are merged first, so one bird broken into several contours is one crop. The cap bounds the cost on a busy frame; the YOLO budget bounds it per second.
+- **Visits are matched jointly.** Matching each detection to its nearest open visit hands a fast bird's new position to a neighbour's visit when it lands nearer the neighbour's last box than its own; that visit then loses its bird and a second one opens (tested in `tests/test_multi_bird.py`). The detections of a frame are therefore assigned to the visits open before it with the Hungarian method (`scipy.optimize.linear_sum_assignment`, installed with ultralytics), at a cost of (1 - IoU) plus the centre distance over the reach. The old thresholds stay as the gate. A box mostly inside another box that joined or opened a visit on the same frame is the same bird (R5's head beside its body).
+- **The YOLO budget counts what gated frames start.** Track and motion crops share `max_yolo_calls_per_s` (5) as a token bucket in capture time, so the limit is per second whatever the cadence. The re-check window's crops are not counted: they are bounded by the window, and throttling them would undo R2.
 - **Open visits are tracked past the motion gate (P9).** A bird that holds still is learned into a MOG2 background in about a second and stops being motion. So while a visit is open, its last box gets its own YOLO crop on every gated frame, and the visit closes only after YOLO has not confirmed the bird for `dedupe_within_seconds`.
 - **Tracked birds are kept out of the MOG2 update.** OpenCV's MOG2 has one global learning rate (`apply(learningRate=...)`), not a per-pixel one. Zeroing it while a visit is open would freeze adaptation to light over the whole ROI for the length of the visit. Instead, each open visit's padded box is replaced, in the image passed to `apply()`, by the model's own background image. The model therefore sees background there and never learns the bird, while it goes on adapting everywhere else.
   - **When the background image is taken.** It is refreshed on gated frames while no visit is open, before `apply()`. Taken after `apply()`, or while a visit is open, it already holds part of the bird from the frames between its arrival and the gated frame that opened the visit. A test caught this: the bird leaked into the mask.
@@ -164,7 +177,7 @@ These runs are the default bird clip (`synth_bird.mp4`, 1280×720, example ROI) 
 | run_id `2f100fc6` | bird: lands just before 4 s, perches, leaves at ~17 s | 3 | 0.33 (1 call; nothing moved before the landing) | 15 | 1.07 (16 calls; max 2) | 118.9 (2 calls, 1 cold) / 60.4 (15 calls) |
 
 - With no visit open, the call rate is what it was: one call per gated frame that has motion.
-- With one visit open, each gated frame adds one track crop, and the motion crop still runs when something else moves. The maximum is 2 calls per gated frame, and n + 1 with n open visits (plus the re-check crop while a window is open, below).
+- With one visit open, each gated frame adds one track crop, and the motion crop still runs when something else moves. The maximum was 2 calls per gated frame, and n + 1 with n open visits (plus the re-check crop while a window is open, below). Since multi-bird tracking it is n + (motion regions, at most 4), capped by the budget at 5 per second; the corpus measurements are in [corpus-baseline.md](corpus-baseline.md).
 - The track crop keeps being classified until `dedupe_within_seconds` after the bird's last confirmation. After the bird left at ~17 s, the last gated frames ran track crops that found nothing.
 - A track crop (the 103×67 bird padded by 50 px, about 203×167) cost the same as a motion crop in this session: about 60 ms. MOG2 p50 stayed 1.8–1.9 ms on the ROI. Masking a box costs one copy of the ROI per frame while a visit is open, and the background image costs about 1 ms per gated frame.
 - Run_id `2f100fc6` logged one visit: `visit_frames` 14, `last_seen` 13.3 s after `ts`. Before this change, the same clip gave `visit_frames` 1 and `last_seen == ts`.
@@ -207,8 +220,9 @@ To reproduce a row, regenerate the blob clip these runs used (`python scripts/ma
 ## 6. Known limitations
 
 - **Capture backends are Windows-first.** Device names come from DirectShow (pygrabber), and the capture tries DSHOW and then MSMF. On Linux and macOS, `--source` files work, but live capture and device naming are untested.
-- **Only the largest motion contour** in the ROI is classified on a gated frame (open visits are classified separately).
-- **Two birds within 2 x a bird's size of each other merge into one visit.**
+- **At most `max_motion_regions` (4) motion regions** are classified on a gated frame, and at most `max_yolo_calls_per_s` (5) gated-frame crops a second.
+- **Close birds can still share a visit, and one bird can be two.** When YOLO misses one of two neighbours on a frame, the other's box can take its visit; one blurred bird boxed twice, side by side, is two visits. Corpus numbers: [corpus-baseline.md](corpus-baseline.md).
+- **Every YOLO call skips frames on 1080p footage.** A call (about 58 ms) is longer than a frame interval at 30 fps; a gated frame with 5 calls skips about 8 frames (observations M3).
 - **Anything YOLO keeps calling a bird is one long visit,** written as truncated every `max_visit_seconds` (600 s).
 - **CPU by default.** CUDA works if a CUDA build of torch is installed (see `requirements.txt`), but only YOLO benefits.
 - **Detection shares the UI thread,** so the preview stalls for one YOLO call per second, and for one on every third frame during a re-check window (about a second).
