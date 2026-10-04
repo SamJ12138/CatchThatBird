@@ -21,6 +21,9 @@ detection:
   recheck_every_n_frames: 3         # ... on every Nth of them. 3, not 1: at 1 a laptop CPU cannot keep up
                                     # (20 YOLO calls/s, one frame in three dropped); at 3 the loop keeps
                                     # up (10 calls/s) and the visit opens about 0.1 s later
+  max_motion_regions: 4             # motion regions classified per gated frame, largest first
+  max_yolo_calls_per_s: 5           # YOLO calls gated frames may start (track crops first, then
+                                    # motion regions); the rest wait for the budget to refill
 
 logging:
   events_file: data/events.jsonl

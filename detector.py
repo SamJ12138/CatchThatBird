@@ -73,6 +73,39 @@ class _Recheck:
     yolo_calls: int = 0
 
 
+@dataclass
+class _Deferred:
+    """A gated frame's crop the YOLO budget did not allow yet."""
+    kind: str                        # "track" or "motion"
+    xyxy: tuple[int, int, int, int]
+    from_seq: int
+
+
+XYXY = tuple[int, int, int, int]
+
+
+def merge_regions(boxes: list[tuple[XYXY, float]]) -> list[tuple[XYXY, float]]:
+    """(padded box, contour area) pairs -> regions: boxes that share a pixel are
+    merged into their union, repeatedly, with their areas summed. Largest
+    area first."""
+    regions = list(boxes)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(regions)):
+            for j in range(i + 1, len(regions)):
+                (a, area_a), (b, area_b) = regions[i], regions[j]
+                if _intersects(a, b):
+                    regions[i] = ((min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])),
+                                  area_a + area_b)
+                    del regions[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return sorted(regions, key=lambda r: -r[1])
+
+
 def _dedupe(detections: list["Detection"], threshold: float = 0.5) -> list["Detection"]:
     """One detection per bird when the motion and a track crop both saw it:
     same class and IoU >= threshold -> keep the more confident one."""
@@ -224,7 +257,9 @@ class Detector:
             f"(ids={self._target_class_ids}), "
             f"conf>={config.yolo_confidence_threshold}, "
             f"motion_min_area={config.motion_min_area}, "
-            f"every_n_frames={config.process_every_n_frames}"
+            f"every_n_frames={config.process_every_n_frames}, "
+            f"max_motion_regions={config.max_motion_regions}, "
+            f"max_yolo_calls_per_s={config.max_yolo_calls_per_s}"
         )
 
         self._frame_count = 0
@@ -233,6 +268,11 @@ class Detector:
         self._recheck: Optional[_Recheck] = None       # the open re-check window, if any
         self._motion_burst = False   # motion that was no bird, on every gated frame since a quiet one
         self.last_motion_area = 0.0  # largest contour on the last gated frame (for tests)
+        # YOLO budget for the crops gated frames start: a token bucket in
+        # capture time, max_yolo_calls_per_s tokens, refilled at that rate.
+        self._tokens = float(config.max_yolo_calls_per_s)
+        self._tokens_at: Optional[float] = None
+        self._deferred: list[_Deferred] = []
         self._motion_gates_opened = 0
         self._yolo_invocations = 0
         self._detections_total = 0
@@ -290,18 +330,24 @@ class Detector:
     def process(self, frame: Frame, tracks: Sequence[ROI] = ()) -> list[Detection]:
         """Always updates MOG2 (on the ROI region if set). On every Nth frame
         after warm-up (a gated frame) YOLO runs on:
-          - the padded box around the largest motion contour, if it is at
-            least motion_min_area ("motion" crop), and
           - the padded last box of every open visit in `tracks`, whether or
-            not MOG2 saw motion there ("track" crop, P9), unless the motion
-            crop already contains that box.
+            not MOG2 saw motion there ("track" crop, P9), unless a motion
+            region already contains that box, and
+          - up to max_motion_regions motion regions, largest first: every
+            contour of at least motion_min_area, padded, merged with the
+            others whose padded boxes it shares a pixel with ("motion" crops).
+        Those crops share a budget of max_yolo_calls_per_s (a token bucket in
+        capture time), track crops first: the ones past it are logged
+        ("yolo_budget" skip "deferred") and classified on the following
+        frames as the budget refills, until the next gated frame replaces
+        them.
         `tracks` (full-frame x, y, w, h) are also kept out of the MOG2 update:
         their padded boxes are replaced with the model's own background image
         before apply(), so a bird that sits still is never learned into the
         background.
 
-        A motion crop in which YOLO found nothing opens a re-check window
-        (R2): for recheck_window_frames frames that crop is kept out of the
+        The largest motion region in which YOLO found nothing opens a re-check
+        window (R2): for recheck_window_frames frames that crop is kept out of the
         MOG2 update the same way, and on every recheck_every_n_frames-th of
         them YOLO runs on it again ("recheck" crop), gated or not. A bird
         that was blurred in flight on the gated frame is then found as soon
@@ -386,54 +432,111 @@ class Detector:
             self._gate_counter.record("skip", frame_seq=seq,
                                       reason="recheck" if recheck_due else "cadence")
 
-        crops: list[tuple[str, tuple[int, int, int, int]]] = []
-        motion_xyxy = None
+        self._refill(frame.captured_wall_time)
+        # (kind, crop, frame the crop was deferred from or None)
+        crops: list[tuple[str, XYXY, Optional[int]]] = []
+        regions: list[XYXY] = []
         if tick:
-            motion_xyxy = self._motion_crop(frame, fg_mask, (rx, ry), pad)
-            if motion_xyxy is not None:
-                crops.append(("motion", motion_xyxy))
-            for box in tracks:
-                if motion_xyxy is not None and _contains(motion_xyxy, box):
-                    continue  # the motion crop already shows this bird
-                crops.append(("track", _padded_xyxy(box, pad, frame.image.shape)))
+            self._expire_deferred(seq)
+            regions = self._motion_regions(frame, fg_mask, (rx, ry), pad)
+            # Open-visit re-checks first, then motion regions by area; past the
+            # budget, the rest wait for it to refill (_run_deferred).
+            wanted: list[tuple[str, XYXY]] = [
+                ("track", _padded_xyxy(box, pad, frame.image.shape)) for box in tracks
+                if not any(_contains(r, box) for r in regions)]  # else a region shows it
+            wanted += [("motion", r) for r in regions]
+            for kind, xyxy in wanted:
+                if self._take_token():
+                    crops.append((kind, xyxy, None))
+                else:
+                    self._defer(kind, xyxy, seq)
+        else:
+            crops += self._run_deferred(seq)
         if recheck is not None and recheck_due:
-            crops.append(("recheck", recheck.xyxy))
+            crops.append(("recheck", recheck.xyxy, None))   # bounded by its window, not budgeted
             recheck.yolo_calls += 1
 
         detections: list[Detection] = []
         found_in: set[str] = set()
-        for kind, xyxy in crops:
+        rejected: list[XYXY] = []   # this gated frame's motion regions YOLO found nothing in
+        for kind, xyxy, deferred_from in crops:
             found = self._classify(frame, kind, xyxy)
             if found:
                 found_in.add(kind)
+            elif kind == "motion" and deferred_from is None:
+                rejected.append(xyxy)
             detections += found
         detections = _dedupe(detections)
         self._detections_total += len(detections)
 
         if recheck is not None:
             self._end_recheck(recheck, seq, found=bool(found_in & {"motion", "recheck"}))
+        # A rejected region that belongs to an open visit, or lies by a bird
+        # found on this frame (it opens a visit now), is not worth a window.
+        birds = list(tracks) + [d.bbox_xywh for d in detections]
+        bird_crops = frozen[:len(tracks)] + [_padded_xyxy(b, pad, frame.image.shape)
+                                             for b in birds[len(tracks):]]
+        rejected = [r for r in rejected if not self._belongs_to_a_visit(r, birds, bird_crops)]
         # One window per burst of motion. Steady motion that is no bird is
         # rejected on every gated frame; it must not hold a window open, and
         # its region frozen, for as long as it lasts. The next window can
         # open only after a gated frame on which nothing moved.
         if tick and recheck is not None:
             self._motion_burst = True
-        elif tick and motion_xyxy is None:
+        elif tick and not regions:
             self._motion_burst = False
-        elif tick and "motion" not in found_in and not self._belongs_to_a_visit(
-                motion_xyxy, tracks, frozen):
-            # Motion that was no bird, and not an open visit's bird either.
+        elif tick and rejected:
+            # Motion that was no bird, and no bird's either: the largest such region.
             if not self._motion_burst and self._config.recheck_window_frames > 0:
-                self._recheck = _Recheck(motion_xyxy, seq)
+                self._recheck = _Recheck(rejected[0], seq)
                 self._recheck_windows += 1
                 self._obs.emit(
                     "recheck", "start", frame_seq=seq,
-                    context={"crop_xyxy": list(motion_xyxy),
+                    context={"crop_xyxy": list(rejected[0]),
                              "window_frames": self._config.recheck_window_frames,
                              "every_n_frames": self._config.recheck_every_n_frames},
                 )
             self._motion_burst = True
         return detections
+
+    # ------------------------------------------------------------ YOLO budget
+
+    def _refill(self, t: float) -> None:
+        cap = float(self._config.max_yolo_calls_per_s)
+        if self._tokens_at is not None and t > self._tokens_at:
+            self._tokens = min(cap, self._tokens + (t - self._tokens_at) * cap)
+        self._tokens_at = t
+
+    def _take_token(self) -> bool:
+        if self._tokens >= 1 - 1e-6:     # capture times are float seconds
+            self._tokens -= 1
+            return True
+        return False
+
+    def _defer(self, kind: str, xyxy: XYXY, seq: int) -> None:
+        self._deferred.append(_Deferred(kind, xyxy, seq))
+        self._obs.emit("yolo_budget", "skip", frame_seq=seq, context={
+            "reason": "deferred", "crop": kind, "crop_xyxy": list(xyxy),
+            "max_yolo_calls_per_s": self._config.max_yolo_calls_per_s})
+
+    def _run_deferred(self, seq: int) -> list[tuple[str, XYXY, Optional[int]]]:
+        """Deferred crops, oldest first, as far as the budget has refilled.
+        They are classified on this frame, at the crop of the gated frame."""
+        out = []
+        while self._deferred and self._take_token():
+            d = self._deferred.pop(0)
+            self._obs.emit("yolo_budget", "success", frame_seq=seq, context={
+                "crop": d.kind, "crop_xyxy": list(d.xyxy), "deferred_from": d.from_seq})
+            out.append((d.kind, d.xyxy, d.from_seq))
+        return out
+
+    def _expire_deferred(self, seq: int) -> None:
+        """A new gated frame replaces the crops still waiting from the last one."""
+        for d in self._deferred:
+            self._obs.emit("yolo_budget", "skip", frame_seq=seq, context={
+                "reason": "expired", "crop": d.kind, "crop_xyxy": list(d.xyxy),
+                "deferred_from": d.from_seq})
+        self._deferred = []
 
     def _belongs_to_a_visit(
         self, motion_xyxy: tuple[int, int, int, int], tracks: Sequence[ROI],
@@ -463,11 +566,13 @@ class Detector:
             self._obs.emit("recheck", "skip", frame_seq=seq,
                            context={"reason": "expired", **context})
 
-    def _motion_crop(
+    def _motion_regions(
         self, frame: Frame, fg_mask: np.ndarray, offset: tuple[int, int], pad: int,
-    ) -> Optional[tuple[int, int, int, int]]:
-        """Padded full-frame crop (x0, y0, x1, y1) around the largest motion
-        contour, or None if there is none of at least motion_min_area."""
+    ) -> list[XYXY]:
+        """Padded full-frame crops (x0, y0, x1, y1) around motion: every
+        contour of at least motion_min_area, padded by motion_padding_px;
+        crops that share a pixel are merged into one; at most
+        max_motion_regions, largest contour area first. [] if none."""
         seq = frame.seq
         self.last_motion_area = 0.0
         with self._obs.span("morph_contour", frame_seq=seq) as sp:
@@ -480,19 +585,26 @@ class Detector:
             )
             if not contours:
                 sp.skip("no_contours")
-                return None
-            largest = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest)
-            self.last_motion_area = area
-            sp.context.update(n_contours=len(contours), largest_area=area)
-            if area < self._config.motion_min_area:
+                return []
+            areas = [cv2.contourArea(c) for c in contours]
+            self.last_motion_area = max(areas)
+            sp.context.update(n_contours=len(contours), largest_area=self.last_motion_area)
+            # Contour coords are relative to the ROI region; translate to full frame.
+            boxes = []
+            for c, area in zip(contours, areas):
+                if area >= self._config.motion_min_area:
+                    x, y, w, h = cv2.boundingRect(c)
+                    boxes.append((_padded_xyxy((offset[0] + x, offset[1] + y, w, h), pad,
+                                               frame.image.shape), area))
+            if not boxes:
                 sp.skip("area_below_min",
                         context={"motion_min_area": self._config.motion_min_area})
-                return None
+                return []
+            regions = merge_regions(boxes)
+            cap = self._config.max_motion_regions
+            sp.context.update(n_regions=len(regions), n_regions_dropped=max(0, len(regions) - cap))
         self._motion_gates_opened += 1
-        x, y, w, h = cv2.boundingRect(largest)
-        # Contour coords are relative to the ROI region; translate to full frame.
-        return _padded_xyxy((offset[0] + x, offset[1] + y, w, h), pad, frame.image.shape)
+        return [xyxy for xyxy, _ in regions[:cap]]
 
     def _classify(
         self, frame: Frame, kind: str, xyxy: tuple[int, int, int, int],

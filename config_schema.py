@@ -40,6 +40,8 @@ class DetectionConfig(BaseModel):
     max_visit_seconds: int = 600
     recheck_window_frames: int = Field(default=30, ge=0)
     recheck_every_n_frames: int = Field(default=3, ge=1)
+    max_motion_regions: int = Field(default=4, ge=1)
+    max_yolo_calls_per_s: int = Field(default=5, ge=1)
 
 
 class LoggingConfig(BaseModel):

@@ -183,7 +183,9 @@ def test_main_sends_open_visits_to_the_detector(synth_video_2s, tmp_path, fake_p
     from tests.conftest import write_test_config
 
     cfg = write_test_config(tmp_path, **{"motion_warmup_frames: 60": "motion_warmup_frames: 2",
-                                         "process_every_n_frames: 30": "process_every_n_frames: 1"})
+                                         "process_every_n_frames: 30": "process_every_n_frames: 1",
+                                         # every frame gated: past the default 5 calls/s
+                                         "max_yolo_calls_per_s: 5": "max_yolo_calls_per_s: 1000"})
     fake = fake_predictor(boxes(range(10, 61), (300, 150, 30, 20)))
     main.main(["--source", str(synth_video_2s), "--headless", "--no-pace", "--config", str(cfg),
                "--log-dir", str(tmp_path / "logs"), "--roi-file", str(tmp_path / "no_roi.json")],

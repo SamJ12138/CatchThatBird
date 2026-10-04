@@ -216,7 +216,10 @@ def test_motion_next_to_an_open_visit_opens_no_window(tmp_path, obs, bill_x, win
     re-checked when its crop touches the visit's own crop (x 132), nor when
     it is near enough that a bird found there would join the visit (x 140:
     35 px from the bird's centre, within 2 x its size). Far from the visit
-    (x 250) the same motion does open a window."""
+    (x 250) the same motion does open a window: on the landing frame 60,
+    since every motion region is classified (the bill is a region of its
+    own there), and while that window holds its crop out of the background
+    the bill of frame 90 is no motion."""
     fake = FakePredictor(boxes(range(60, 241), BIRD), within_crop=True)
     images = [image()] * 59
     for seq in range(60, 241):   # the "bill" shows on gated frames only, so it is never learned
@@ -227,10 +230,12 @@ def test_motion_next_to_an_open_visit_opens_no_window(tmp_path, obs, bill_x, win
     (ev,) = events
     assert ev["frame_seq"] == 60 and ev["visit_frames"] == 7
     calls = yolo_calls(obs)
-    assert all(calls[s] == Counter(motion=1, track=1) for s in (90, 150, 180, 210, 240))
+    assert all(calls[s] == Counter(motion=1, track=1) for s in (150, 180, 210, 240))
     if window:
-        assert sorted(s for s in calls if calls[s]["recheck"]) == list(range(93, 121, 3))
+        assert sorted(s for s in calls if calls[s]["recheck"]) == list(range(63, 91, 3))
+        assert calls[60] == Counter(motion=2) and calls[90] == Counter(track=1, recheck=1)
     else:
+        assert calls[90] == Counter(motion=1, track=1)
         assert set(calls) == {60, 90, 120, 150, 180, 210, 240}
 
 

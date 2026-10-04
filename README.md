@@ -80,7 +80,7 @@ python main.py --source data/samples/synth_bird.mp4 --headless --no-pace --yes
 What you will see: a few seconds of log lines, then the prompt. The exit code is 0. Abridged:
 
 ```
-INFO    | Run 85c3990f: structured log -> ...\logs\run_85c3990f.jsonl
+INFO    | Run 10b9b584: structured log -> ...\logs\run_10b9b584.jsonl
 WARNING | YOLO device=cpu -- torch was not built with CUDA. It will still work; ...
 INFO    | Loading YOLO model 'yolov8n.pt' (auto-downloads on first run)
 Downloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt to 'yolov8n.pt': 100% 6.2MB
@@ -93,13 +93,13 @@ INFO    | BIRD detected (conf=0.91, bbox=583,457,103,68)
 ...       (14 "BIRD detected" lines, one per second while the bird perches)
 INFO    | End of video file after 600 frames
 INFO    | FrameGrabber stopped (captured=600, failures=0)
-INFO    | Bird visit logged: 2026-09-30T15:54:31.165-04:00 seq=121 frames=14 conf=0.9216
+INFO    | Bird visit logged: 2026-10-04T01:28:33.933-04:00 seq=121 frames=14 conf=0.9216
 ```
 
 `data/events.jsonl` now holds one visit. This is the line from that run: the real YOLOv8n on CPU, the synthetic clip with the real photo:
 
 ```
-{"ts": "2026-09-30T15:54:31.165-04:00", "run_id": "85c3990f", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20260930T155431.165_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20260930T155431.165_seq000121_d0_full.jpg", "last_seen": "2026-09-30T15:54:44.165-04:00", "visit_frames": 14, "truncated": false, "recovered": false}
+{"ts": "2026-10-04T01:28:33.933-04:00", "run_id": "10b9b584", "frame_seq": 121, "class": "bird", "confidence": 0.9216, "bbox_xywh": [583, 457, 103, 67], "snapshot_crop": "snapshots/20261004T012833.933_seq000121_d0_crop.jpg", "snapshot_full": "snapshots/20261004T012833.933_seq000121_d0_full.jpg", "last_seen": "2026-10-04T01:28:46.933-04:00", "visit_frames": 14, "visit_id": "10b9b584-1", "truncated": false, "recovered": false, "concurrent_max": 1}
 ```
 
 The crop snapshot it points to (`data/snapshots/..._crop.jpg`) is the padded motion crop that YOLO classified when the visit opened:
@@ -124,7 +124,7 @@ What you will see: a summary of the run you just made (abridged):
 
 ```
 Runs: 1  Lines: 174  Unparseable lines: 0
-  85c3990f: 2026-09-30T19:54:24.797+00:00 .. 2026-09-30T19:54:29.611+00:00  run success, exit_code=0, 4.8s
+  10b9b584: 2026-10-04T05:28:27.541+00:00 .. 2026-10-04T05:28:34.182+00:00  run success, exit_code=0, 6.6s
 
 == Errors: stage x error_type (fail/skip lines carrying an error_type) ==
 stage     input_invalid  external_api  parse  timeout  hardware  unknown  total
@@ -140,11 +140,11 @@ render                  headless    600
 
 == Stages: totals and duration_ms ==
 stage             success  fail  skip   p50_ms   p95_ms
-detector_init           1     0     0  2342.12  2342.12
-morph_contour           1     0    17     0.26     0.32
-yolo_infer             16     0     0    36.98    61.95
-persist                 1     0    13    11.47    11.47
-mog2_apply *          600     0     0    ~1.19    ~1.89
+detector_init           1     0     0  2362.20  2362.20
+morph_contour           1     0    17     0.41     0.65
+yolo_infer             16     0     0    56.96    89.08
+persist                 1     0    13     8.43     8.43
+mog2_apply *          600     0     0    ~1.90    ~3.87
 ```
 
 How to read it:
@@ -266,6 +266,8 @@ All settings are in `config.yaml`. Unknown keys and wrong types stop the program
 | `detection.max_visit_seconds` | `600` | A visit this long is written with `"truncated": true`, and the next confirmation opens a new one |
 | `detection.recheck_window_frames` | `30` | When YOLO finds no bird in a gated frame's motion crop, it re-checks that crop on up to this many following frames (about 1 s), and the crop is kept out of the background model meanwhile. `0` turns the re-check off |
 | `detection.recheck_every_n_frames` | `3` | Within that window, YOLO runs on every Nth frame. At `1` (every frame) a laptop CPU cannot keep up: 20 YOLO calls/s, one frame in three dropped. At `3` the loop keeps up, at 10 calls/s, and the visit opens about 0.1 s later |
+| `detection.max_motion_regions` | `4` | Motion regions classified on a gated frame: every contour of at least `motion_min_area`, padded, merged with the contours whose padded boxes it overlaps; the largest first |
+| `detection.max_yolo_calls_per_s` | `5` | YOLO calls that gated frames may start per second of capture time: the open visits' track crops first, then motion regions by size. The rest are logged and classified on the following frames as the budget refills, until the next gated frame. The re-check window's calls are not counted |
 | `logging.events_file` | `data/events.jsonl` | Where visits are appended |
 | `logging.snapshots_dir` | `data/snapshots` | Where snapshots are written |
 | `logging.snapshot_format` | `jpeg` | `jpeg` or `png` |
@@ -312,6 +314,8 @@ Exit codes: 0 for a normal end, including Ctrl-C and SIGTERM; 1 for an error, wi
 | `visit_frames` | Frames in which the bird was detected: gated frames, plus the re-check frame that opened the visit, if one did |
 | `truncated` | `true` if the visit was cut at `detection.max_visit_seconds`; the bird's next confirmation starts a new line |
 | `recovered` | `true` if the line was written at startup from `data/open_visits.json`: the visit was still open when the previous run was killed |
+| `visit_id` | `<run_id>-<n>`, the run's nth visit. Lines written before visit ids existed do not have it |
+| `concurrent_max` | The most visits open at once at any moment of this visit, itself included: 2 or more when another bird was there too. Missing on older lines |
 
 Lines are written when a visit closes: 10 s after the bird was last seen, or when the run ends. The run ends on a normal exit, an error, Ctrl-C, SIGTERM or Ctrl-Break. Open visits are also saved to `data/open_visits.json`: whenever a visit opens or closes, and every 60 s. After a hard kill (SIGKILL, `taskkill /F`, power loss), the next start writes them with `"recovered": true`. Only the last 60 s of an open visit (at most) are lost.
 

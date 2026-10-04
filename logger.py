@@ -5,7 +5,13 @@ visit, and absorbs later detections of the same class within
 `dedupe_within_seconds` of its last sighting whose box has IoU >= 0.3 with the
 visit's most recent box, or whose centre is within 2 x max(w, h) of that box's
 centre (both configurable; the centre rule keeps a hop or a truncated box in
-the same visit). While a visit is open, main.py passes open_tracks() to the
+the same visit). The detections of one frame are matched to the visits open
+before it jointly, one to one, at the lowest total cost of (1 - IoU) plus the
+centre distance over that reach (Hungarian method), so two birds near each
+other keep their own visits; a box mostly inside another box that joined or
+opened a visit on the same frame is the same bird (a duplicate). Each visit
+gets a visit_id (<run_id>-<n>) and concurrent_max, the most visits open at
+once while it was. While a visit is open, main.py passes open_tracks() to the
 Detector, which runs YOLO on each open visit's last box every gated frame, so
 a bird that sits still keeps confirming its visit. Open visits live in memory and are written when they expire (checked
 on every handled frame) or when the logger closes, so `last_seen` and
@@ -81,6 +87,18 @@ class _Visit:
     last_seq: int
     visit_frames: int = 1
     started: float = 0.0  # capture time of the first detection
+    concurrent_max: int = 1  # most visits open at once while this one was
+
+
+def _overlap_of_smaller(a: BBox, b: BBox) -> float:
+    """Intersection area over the smaller box's area."""
+    iw = max(0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    ih = max(0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    smaller = min(a[2] * a[3], b[2] * b[3])
+    return iw * ih / smaller if smaller > 0 else 0.0
+
+
+DUPLICATE_OVERLAP = 0.5  # a box mostly inside another box of the same frame is the same bird
 
 
 class EventLogger:
@@ -126,6 +144,7 @@ class EventLogger:
         self._last_checkpoint: Optional[float] = None
 
         self._open: list[_Visit] = []
+        self._visit_counter = 0  # visit_id = <run_id>-<counter>, from 1 each run
         self._capped_days: set[date] = set()
         self._closed = False
 
@@ -144,8 +163,21 @@ class EventLogger:
         n_before = len(self._open)
         closed = self._expire(t)
         opened: list[dict[str, Any]] = []
+        assigned = self._associate(detections, t)
+        # Boxes that join or open a visit on this frame: the assigned ones, and
+        # each one that opens a visit, as it does.
+        used: list[BBox] = [detections[i].bbox_xywh for i in assigned]
         for index, det in enumerate(detections):
-            visit = self._match(det, t)
+            visit = assigned.get(index)
+            if visit is None and any(_overlap_of_smaller(det.bbox_xywh, u) >= DUPLICATE_OVERLAP
+                                     for u in used):
+                # A second box of a bird already handled on this frame (its
+                # head next to its whole body, R5): neither a visit nor its box.
+                self._obs.emit("persist", "skip", frame_seq=frame.seq,
+                               context={"reason": "duplicate", "bbox_xywh": list(det.bbox_xywh)})
+                continue
+            if visit is None:
+                used.append(det.bbox_xywh)
             if visit is not None:
                 if visit.last_seq != frame.seq:
                     visit.visit_frames += 1
@@ -155,6 +187,7 @@ class EventLogger:
                 self._obs.emit(
                     "persist", "skip", frame_seq=frame.seq,
                     context={"reason": "dedupe", "visit_frame_seq": visit.event["frame_seq"],
+                             "visit_id": visit.event["visit_id"],
                              "visit_frames": visit.visit_frames},
                 )
                 continue
@@ -185,6 +218,11 @@ class EventLogger:
         """Last box of every visit still open at time `t` (for the Detector's
         track crops)."""
         return [v.last_bbox for v in self._open if t - v.last_seen <= self._window]
+
+    def open_visits(self) -> list[dict[str, Any]]:
+        """The open visits: visit_id, first box, last box, as they are now."""
+        return [{"visit_id": v.event["visit_id"], "first_bbox": v.event["bbox_xywh"],
+                 "bbox_xywh": list(v.last_bbox), "last_seen": iso(v.last_seen)} for v in self._open]
 
     def close(self) -> None:
         """Write every still-open visit. Safe to call twice."""
@@ -244,23 +282,37 @@ class EventLogger:
                     continue  # a malformed line never blocks logging
         return counts
 
-    def _match(self, det: Detection, t: float) -> Optional[_Visit]:
-        """The open visit this detection belongs to: same class, within the
-        window, and IoU >= threshold or centre within center_distance x
-        max(w, h) of the visit's last box. Best overlap wins, then nearest."""
-        best, best_key = None, None
-        for visit in self._open:
-            if visit.class_name != det.class_name or t - visit.last_seen > self._window:
-                continue
-            overlap = iou(visit.last_bbox, det.bbox_xywh)
-            dist = center_distance(visit.last_bbox, det.bbox_xywh)
-            reach = self._center_distance * max(visit.last_bbox[2], visit.last_bbox[3])
-            if overlap < self._iou_threshold and dist > reach:
-                continue
-            key = (overlap, -dist)
-            if best_key is None or key > best_key:
-                best, best_key = visit, key
-        return best
+    def _cost(self, det: Detection, visit: _Visit, t: float) -> Optional[float]:
+        """Cost of `det` joining `visit`: (1 - IoU) plus the centre distance
+        over the visit's reach (center_distance x max(w, h) of its last box),
+        or None when the pair fails the acceptance gate: another class, past
+        the dedupe window, or IoU < threshold with the centre out of reach."""
+        if visit.class_name != det.class_name or t - visit.last_seen > self._window:
+            return None
+        overlap = iou(visit.last_bbox, det.bbox_xywh)
+        dist = center_distance(visit.last_bbox, det.bbox_xywh)
+        reach = self._center_distance * max(visit.last_bbox[2], visit.last_bbox[3])
+        if overlap < self._iou_threshold and dist > reach:
+            return None
+        return (1.0 - overlap) + (dist / reach if reach > 0 else 0.0)
+
+    def _associate(self, detections: list[Detection], t: float) -> dict[int, _Visit]:
+        """Detections of one frame against the visits open before it, one
+        visit per detection and one detection per visit, at the lowest total
+        cost (Hungarian method). Pairs that fail the gate are never chosen.
+        Returns {detection index: visit}; the others open visits (or are
+        duplicates of a box that joined one)."""
+        if not detections or not self._open:
+            return {}
+        costs = [[self._cost(d, v, t) for v in self._open] for d in detections]
+        if all(c is None for row in costs for c in row):
+            return {}
+        from scipy.optimize import linear_sum_assignment   # scipy comes with ultralytics
+
+        forbidden = 1e6
+        matrix = np.array([[forbidden if c is None else c for c in row] for row in costs])
+        rows, cols = linear_sum_assignment(matrix)
+        return {int(i): self._open[int(j)] for i, j in zip(rows, cols) if costs[i][j] is not None}
 
     def _expire(self, t: float) -> int:
         """Write visits unconfirmed for longer than the window, and cut visits
@@ -279,7 +331,8 @@ class EventLogger:
 
     def _snapshot_event(self, visit: _Visit, **flags: bool) -> dict[str, Any]:
         return dict(visit.event, last_seen=iso(visit.last_seen), visit_frames=visit.visit_frames,
-                    truncated=flags.get("truncated", False), recovered=flags.get("recovered", False))
+                    truncated=flags.get("truncated", False), recovered=flags.get("recovered", False),
+                    concurrent_max=visit.concurrent_max)
 
     def _checkpoint(self, t: Optional[float]) -> None:
         """Rewrite open_visits.json with every open visit (atomic replace,
@@ -318,18 +371,20 @@ class EventLogger:
             logger.error(f"Unreadable {self.sidecar_path.name} ({e}); moved to {bad.name}")
             sp.fail("parse", describe(e), {"moved_to": str(bad)})
             return
-        written = set()
+        # A visit is identified by its visit_id; lines written before visit ids
+        # existed, by (run_id, frame_seq). Two visits can open on one frame.
+        written: set[Any] = set()
         if self.events_path.exists():
             with self.events_path.open(encoding="utf-8") as f:
                 for line in f:
                     try:
                         ev = json.loads(line)
-                        written.add((ev["run_id"], ev["frame_seq"]))
-                    except (ValueError, KeyError, TypeError):
+                        written.add(ev.get("visit_id") or (ev["run_id"], ev["frame_seq"]))
+                    except (ValueError, KeyError, TypeError, AttributeError):
                         continue
         recovered = skipped = 0
         for event in visits:
-            if (event.get("run_id"), event.get("frame_seq")) in written:
+            if (event.get("visit_id") or (event.get("run_id"), event.get("frame_seq"))) in written:
                 skipped += 1
                 continue
             self._append(dict(event, recovered=True))
@@ -368,7 +423,11 @@ class EventLogger:
             "last_seen": iso(t),
             "visit_frames": 1,
         }
+        self._visit_counter += 1
+        event["visit_id"] = f"{self._run_id}-{self._visit_counter}"
         self._open.append(_Visit(event, det.class_name, det.bbox_xywh, t, frame.seq, started=t))
+        for visit in self._open:
+            visit.concurrent_max = max(visit.concurrent_max, len(self._open))
         return event
 
     def _write_image(self, path: Path, image: np.ndarray, seq: int) -> Optional[Path]:
@@ -389,7 +448,8 @@ class EventLogger:
             duration_ms=(time.perf_counter() - t0) * 1000.0,
             context={"ts": event["ts"], "last_seen": event["last_seen"],
                      "visit_frames": event["visit_frames"], "truncated": truncated,
-                     "snapshot_crop": event["snapshot_crop"]},
+                     "snapshot_crop": event["snapshot_crop"], "visit_id": event["visit_id"],
+                     "concurrent_max": event["concurrent_max"]},
         )
         logger.info(
             f"Bird visit logged: {event['ts']} seq={event['frame_seq']} "
